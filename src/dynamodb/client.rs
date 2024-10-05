@@ -3,7 +3,7 @@ use aws_sdk_dynamodb::{
     operation::{create_table::CreateTableOutput, scan::ScanOutput},
     types::{
         AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType,
-        ScalarAttributeType,
+        ScalarAttributeType, Select,
     },
     Client,
 };
@@ -404,5 +404,227 @@ impl DynamoDb {
         }
 
         Ok(items)
+    }
+
+    /// Performs a flexible query operation on a DynamoDB table.
+    ///
+    /// This method provides full control over the query operation, allowing you to specify
+    /// all major query parameters.
+    ///
+    /// # Arguments
+    ///
+    /// * `table_name` - The name of the table to query.
+    /// * `key_condition_expression` - A string representing the key condition expression.
+    /// * `filter_expression` - An optional filter expression to apply to the results.
+    /// * `projection_expression` - An optional projection expression to limit the attributes returned.
+    /// * `expression_attribute_names` - A map of expression attribute names used in the key condition and filter expressions.
+    /// * `expression_attribute_values` - A map of expression attribute values used in the key condition and filter expressions.
+    /// * `limit` - An optional limit on the number of items to evaluate.
+    /// * `scan_index_forward` - An optional boolean to specify the scan direction.
+    /// * `index_name` - An optional name of a secondary index to query.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing a vector of `Item`s if successful, or an error if the operation fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let items = client.query_flexible(
+    ///     "users",
+    ///     "#pk = :pkval AND #sk BETWEEN :start AND :end",
+    ///     Some("age > :min_age"),
+    ///     Some("user_id, username, email"),
+    ///     Some(HashMap::from([
+    ///         ("#pk".to_string(), "user_id".to_string()),
+    ///         ("#sk".to_string(), "created_at".to_string()),
+    ///     ])),
+    ///     Some(HashMap::from([
+    ///         (":pkval".to_string(), AttributeValue::S("123".to_string())),
+    ///         (":start".to_string(), AttributeValue::S("2023-01-01".to_string())),
+    ///         (":end".to_string(), AttributeValue::S("2023-12-31".to_string())),
+    ///         (":min_age".to_string(), AttributeValue::N("18".to_string())),
+    ///     ])),
+    ///     Some(50),
+    ///     Some(false),
+    ///     Some("user_index")
+    /// ).await?;
+    /// ```
+    pub async fn query_flexible(
+        &self,
+        table_name: &str,
+        key_condition_expression: &str,
+        filter_expression: Option<&str>,
+        projection_expression: Option<&str>,
+        expression_attribute_names: Option<HashMap<String, String>>,
+        expression_attribute_values: Option<HashMap<String, AttributeValue>>,
+        limit: Option<i32>,
+        scan_index_forward: Option<bool>,
+        index_name: Option<&str>,
+    ) -> Result<Vec<Item>> {
+        let mut query = self
+            .client
+            .query()
+            .table_name(table_name)
+            .key_condition_expression(key_condition_expression)
+            .set_expression_attribute_names(expression_attribute_names)
+            .set_expression_attribute_values(expression_attribute_values);
+
+        if let Some(filter) = filter_expression {
+            query = query.filter_expression(filter);
+        }
+
+        if let Some(projection) = projection_expression {
+            query = query.projection_expression(projection);
+        }
+
+        if let Some(limit_val) = limit {
+            query = query.limit(limit_val);
+        }
+
+        if let Some(forward) = scan_index_forward {
+            query = query.scan_index_forward(forward);
+        }
+
+        if let Some(index) = index_name {
+            query = query.index_name(index);
+        }
+
+        let response = query.send().await?;
+
+        Ok(response
+            .items
+            .unwrap_or_default()
+            .into_iter()
+            .map(|attrs| Item { attributes: attrs })
+            .collect())
+    }
+
+    /// Performs a simple query operation on a DynamoDB table.
+    ///
+    /// This method provides a simplified interface for common query operations,
+    /// supporting partition key, optional sort key condition, and basic filtering.
+    ///
+    /// # Arguments
+    ///
+    /// * `table_name` - The name of the table to query.
+    /// * `partition_key` - A tuple containing the partition key name and value.
+    /// * `sort_key_condition` - An optional tuple containing the sort key name, condition, and value.
+    /// * `filter_expression` - An optional filter expression to apply to the results.
+    /// * `limit` - An optional limit on the number of items to evaluate.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing a vector of `Item`s if successful, or an error if the operation fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let items = client.query_simple(
+    ///     "users",
+    ///     ("user_id", AttributeValue::S("123".to_string())),
+    ///     Some(("created_at", ">", AttributeValue::S("2023-01-01".to_string()))),
+    ///     Some("age > :min_age"),
+    ///     Some(10)
+    /// ).await?;
+    /// ```
+    pub async fn query_simple(
+        &self,
+        table_name: &str,
+        partition_key: (&str, AttributeValue),
+        sort_key_condition: Option<(&str, &str, AttributeValue)>,
+        filter_expression: Option<&str>,
+        limit: Option<i32>,
+    ) -> Result<Vec<Item>> {
+        let mut key_condition_expression = "#pk = :pkval".to_string();
+        let mut expression_attribute_names =
+            HashMap::from([("#pk".to_string(), partition_key.0.to_string())]);
+        let mut expression_attribute_values =
+            HashMap::from([(":pkval".to_string(), partition_key.1)]);
+
+        if let Some((sort_key, condition, value)) = sort_key_condition {
+            key_condition_expression.push_str(&format!(" AND #sk {} :skval", condition));
+            expression_attribute_names.insert("#sk".to_string(), sort_key.to_string());
+            expression_attribute_values.insert(":skval".to_string(), value);
+        }
+
+        self.query_flexible(
+            table_name,
+            &key_condition_expression,
+            filter_expression,
+            None,
+            Some(expression_attribute_names),
+            Some(expression_attribute_values),
+            limit,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Performs a scan operation on a DynamoDB table with pagination.
+    ///
+    /// This method allows for scanning a table with support for filtering, projection,
+    /// and pagination.
+    ///
+    /// # Arguments
+    ///
+    /// * `table_name` - The name of the table to scan.
+    /// * `filter_expression` - An optional filter expression to apply to the results.
+    /// * `projection_expression` - An optional projection expression to limit the attributes returned.
+    /// * `expression_attribute_names` - A map of expression attribute names used in the filter expression.
+    /// * `expression_attribute_values` - A map of expression attribute values used in the filter expression.
+    /// * `limit` - An optional limit on the number of items to evaluate.
+    /// * `exclusive_start_key` - An optional exclusive start key for pagination.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` containing a tuple of a vector of `Item`s and an optional last evaluated key
+    /// for pagination, or an error if the operation fails.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let (items, last_key) = client.scan_paginated(
+    ///     "users",
+    ///     Some("age > :min_age"),
+    ///     Some("user_id, username, email"),
+    ///     Some(HashMap::new()),
+    ///     Some(HashMap::from([(":min_age".to_string(), AttributeValue::N("18".to_string()))])),
+    ///     Some(100),
+    ///     None
+    /// ).await?;
+    /// ```
+    pub async fn scan_paginated(
+        &self,
+        table_name: &str,
+        filter_expression: Option<&str>,
+        projection_expression: Option<&str>,
+        expression_attribute_names: Option<HashMap<String, String>>,
+        expression_attribute_values: Option<HashMap<String, AttributeValue>>,
+        limit: Option<i32>,
+        exclusive_start_key: Option<HashMap<String, AttributeValue>>,
+    ) -> Result<(Vec<Item>, Option<HashMap<String, AttributeValue>>)> {
+        let mut scan = self
+            .client
+            .scan()
+            .table_name(table_name)
+            .set_filter_expression(filter_expression.map(|s| s.to_string()))
+            .set_projection_expression(projection_expression.map(|s| s.to_string()))
+            .set_expression_attribute_names(expression_attribute_names)
+            .set_expression_attribute_values(expression_attribute_values)
+            .set_limit(limit)
+            .set_exclusive_start_key(exclusive_start_key);
+
+        let response = scan.send().await?;
+
+        let items = response
+            .items
+            .unwrap_or_default()
+            .into_iter()
+            .map(|attrs| Item { attributes: attrs })
+            .collect();
+
+        Ok((items, response.last_evaluated_key))
     }
 }
