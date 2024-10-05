@@ -6,66 +6,80 @@ use aws_sdk_dynamodb::{
 };
 use tracing::{error, info};
 
-pub const CATEGORY_PARTITION_KEY: &str = "category";
-pub const PRODUCT_NAME_SORT_KEY: &str = "product_name";
-
-pub async fn check_authentication(client: &Client) -> Result<()> {
-    match client.list_tables().send().await {
-        Ok(_) => {
-            info!("Authentication successful. Credentials are valid.");
-            Ok(())
-        }
-        Err(e) => {
-            error!("Authentication failed. Error: {}", e);
-            Err(anyhow!("Authentication failed"))
-        }
-    }
+pub struct DynamoDbApp {
+    client: Client,
 }
 
-pub async fn create_table_if_not_exists(
-    client: &Client,
-    table_name: &str,
-) -> Result<CreateTableOutput> {
-    if table_exists(client, table_name).await? {
-        info!("Table '{}' already exists", table_name);
-        return Err(anyhow!("Table already exists"));
+impl DynamoDbApp {
+    pub fn new(sdk_config: &aws_config::SdkConfig) -> Self {
+        let client = aws_sdk_dynamodb::Client::new(sdk_config);
+        Self { client }
     }
 
-    let attr_part = AttributeDefinition::builder()
-        .attribute_name(CATEGORY_PARTITION_KEY)
-        .attribute_type(ScalarAttributeType::S)
-        .build()?;
+    pub async fn check_authentication(&self) -> Result<()> {
+        match self.client.list_tables().send().await {
+            Ok(_) => {
+                info!("Authentication successful. Credentials are valid.");
+                Ok(())
+            }
+            Err(e) => {
+                error!("Authentication failed. Error: {}", e);
+                Err(anyhow!("Authentication failed"))
+            }
+        }
+    }
 
-    let attr_sort = AttributeDefinition::builder()
-        .attribute_name(PRODUCT_NAME_SORT_KEY)
-        .attribute_type(ScalarAttributeType::S)
-        .build()?;
+    pub async fn create_table_if_not_exists(
+        &self,
+        table_name: &str,
+        partition_key: &str,
+        sort_key: Option<&str>,
+    ) -> Result<CreateTableOutput> {
+        if self.table_exists(table_name).await? {
+            info!("Table '{}' already exists", table_name);
+            return Err(anyhow!("Table already exists"));
+        }
 
-    let key_schema_part = KeySchemaElement::builder()
-        .attribute_name(CATEGORY_PARTITION_KEY)
-        .key_type(KeyType::Hash)
-        .build()?;
+        let mut attribute_definitions = vec![AttributeDefinition::builder()
+            .attribute_name(partition_key)
+            .attribute_type(ScalarAttributeType::S)
+            .build()?];
 
-    let key_schema_sort = KeySchemaElement::builder()
-        .attribute_name(PRODUCT_NAME_SORT_KEY)
-        .key_type(KeyType::Range)
-        .build()?;
+        let mut key_schema = vec![KeySchemaElement::builder()
+            .attribute_name(partition_key)
+            .key_type(KeyType::Hash)
+            .build()?];
 
-    let create_table_output = client
-        .create_table()
-        .table_name(table_name)
-        .billing_mode(BillingMode::PayPerRequest)
-        .attribute_definitions(attr_part)
-        .attribute_definitions(attr_sort)
-        .key_schema(key_schema_part)
-        .key_schema(key_schema_sort)
-        .send()
-        .await?;
+        if let Some(sort_key) = sort_key {
+            attribute_definitions.push(
+                AttributeDefinition::builder()
+                    .attribute_name(sort_key)
+                    .attribute_type(ScalarAttributeType::S)
+                    .build()?,
+            );
+            key_schema.push(
+                KeySchemaElement::builder()
+                    .attribute_name(sort_key)
+                    .key_type(KeyType::Range)
+                    .build()?,
+            );
+        }
 
-    Ok(create_table_output)
-}
+        let create_table_output = self
+            .client
+            .create_table()
+            .table_name(table_name)
+            .billing_mode(BillingMode::PayPerRequest)
+            .set_attribute_definitions(Some(attribute_definitions))
+            .set_key_schema(Some(key_schema))
+            .send()
+            .await?;
 
-async fn table_exists(client: &Client, table_name: &str) -> Result<bool> {
-    let tables = client.list_tables().send().await?;
-    Ok(tables.table_names().contains(&table_name.to_string()))
+        Ok(create_table_output)
+    }
+
+    async fn table_exists(&self, table_name: &str) -> Result<bool> {
+        let tables = self.client.list_tables().send().await?;
+        Ok(tables.table_names().contains(&table_name.to_string()))
+    }
 }

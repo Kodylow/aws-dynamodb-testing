@@ -4,7 +4,9 @@ mod logging;
 use anyhow::Result;
 use tracing::info;
 
-pub const TABLE_NAME: &str = "testing-products";
+const TABLE_NAME: &str = "testing-products";
+const PARTITION_KEY: &str = "category";
+const SORT_KEY: &str = "product_name";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -12,12 +14,15 @@ async fn main() -> Result<()> {
     dotenv::dotenv().ok();
 
     let sdk_config = aws_config::load_from_env().await;
-    let ddb_client = aws_sdk_dynamodb::Client::new(&sdk_config);
 
-    dynamodb::check_authentication(&ddb_client).await?;
+    let ddb = dynamodb::DynamoDbApp::new(&sdk_config);
 
-    let table_result = dynamodb::create_table_if_not_exists(&ddb_client, TABLE_NAME).await;
-    match table_result {
+    ddb.check_authentication().await?;
+
+    match ddb
+        .create_table_if_not_exists(TABLE_NAME, PARTITION_KEY, Some(SORT_KEY))
+        .await
+    {
         Ok(table) => {
             if let Some(description) = table.table_description() {
                 info!("Table status: {:?}", description.table_status());
