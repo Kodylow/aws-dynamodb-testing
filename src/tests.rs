@@ -46,17 +46,17 @@
 //!
 //! Note: These tests may incur AWS charges if run against a real DynamoDB instance.
 
-use crate::dynamodb::{DynamoDb, FieldType, Item, Schema, Table};
+use crate::{
+    constants::{CATEGORY_PARTITION_KEY, PRICE_ATTRIBUTE, PRODUCT_NAME_SORT_KEY},
+    dynamodb::{DynamoDb, FieldType, Item, Schema, Table},
+};
 use anyhow::Result;
 use aws_sdk_dynamodb::types::AttributeValue;
 use std::collections::HashMap;
 use tokio::time::Duration;
 use tracing::{info, instrument};
 
-const TEST_TABLE_NAME: &str = "test-products";
-const CATEGORY_PARTITION_KEY: &str = "category";
-const PRODUCT_NAME_SORT_KEY: &str = "product_name";
-const PRICE_ATTRIBUTE: &str = "price";
+const TEST_TABLE_NAME: &str = "testing-products";
 
 #[instrument]
 async fn setup_test_table(ddb: &DynamoDb) -> Result<Table<'static>> {

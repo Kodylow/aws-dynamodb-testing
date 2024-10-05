@@ -1,4 +1,5 @@
 mod command_line;
+mod constants;
 mod dynamodb;
 mod logging;
 #[cfg(test)]
@@ -6,12 +7,8 @@ mod tests;
 mod utils;
 
 use anyhow::Result;
+use constants::{CATEGORY_PARTITION_KEY, PRICE_ATTRIBUTE, PRODUCT_NAME_SORT_KEY, TABLE_NAME};
 use dynamodb::{FieldType, Schema, Table};
-
-const TABLE_NAME: &str = "testing-products";
-const CATEGORY_PARTITION_KEY: &str = "category";
-const PRODUCT_NAME_SORT_KEY: &str = "product_name";
-const PRICE_ATTRIBUTE: &str = "price";
 
 #[tokio::main]
 async fn main() -> Result<()> {
