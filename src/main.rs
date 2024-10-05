@@ -1,8 +1,8 @@
+mod command_line;
 mod dynamodb;
 mod logging;
 use anyhow::Result;
-use dynamodb::Item;
-use tracing::info;
+use dynamodb::{FieldType, Schema, Table};
 
 const TABLE_NAME: &str = "testing-products";
 const CATEGORY_PARTITION_KEY: &str = "category";
@@ -11,30 +11,29 @@ const PRICE_ATTRIBUTE: &str = "price";
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    logging::init_logging()?;
+    logging::init()?;
     dotenv::dotenv().ok();
 
     let sdk_config = aws_config::load_from_env().await;
-
     let ddb = dynamodb::DynamoDb::new(&sdk_config);
 
     ddb.check_auth().await?;
 
-    ddb.create_table_if_not_exists(&dynamodb::Table::new(
+    let schema = Schema::new()
+        .add_field(CATEGORY_PARTITION_KEY, FieldType::String)
+        .add_field(PRODUCT_NAME_SORT_KEY, FieldType::String)
+        .add_field(PRICE_ATTRIBUTE, FieldType::Number);
+
+    let table = Table::new(
         TABLE_NAME,
         CATEGORY_PARTITION_KEY,
         Some(PRODUCT_NAME_SORT_KEY),
-    ))
-    .await?;
+    )
+    .with_schema(schema);
 
-    let item = Item::new()
-        .set_string(CATEGORY_PARTITION_KEY, "living-room")
-        .set_string(PRODUCT_NAME_SORT_KEY, "couch")
-        .set_number(PRICE_ATTRIBUTE, 375.0);
+    ddb.create_table_if_not_exists(&table).await?;
 
-    let put_item_result = ddb.put_item(TABLE_NAME, item).await?;
-
-    info!("Put item result: {:?}", put_item_result);
+    command_line::run(&ddb, &table).await?;
 
     Ok(())
 }
