@@ -3,7 +3,7 @@ use aws_sdk_dynamodb::{
     operation::{create_table::CreateTableOutput, scan::ScanOutput},
     types::{
         AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType,
-        ScalarAttributeType, Select,
+        ScalarAttributeType,
     },
     Client,
 };
@@ -532,15 +532,16 @@ impl DynamoDb {
         &self,
         table_name: &str,
         partition_key: (&str, AttributeValue),
-        sort_key_condition: Option<(&str, &str, AttributeValue)>,
+        sort_key_condition: Option<(&str, String, AttributeValue)>,
         filter_expression: Option<&str>,
         limit: Option<i32>,
+        expression_attribute_values: Option<HashMap<String, AttributeValue>>,
     ) -> Result<Vec<Item>> {
         let mut key_condition_expression = "#pk = :pkval".to_string();
         let mut expression_attribute_names =
             HashMap::from([("#pk".to_string(), partition_key.0.to_string())]);
-        let mut expression_attribute_values =
-            HashMap::from([(":pkval".to_string(), partition_key.1)]);
+        let mut expression_attribute_values = expression_attribute_values.unwrap_or_default();
+        expression_attribute_values.insert(":pkval".to_string(), partition_key.1);
 
         if let Some((sort_key, condition, value)) = sort_key_condition {
             key_condition_expression.push_str(&format!(" AND #sk {} :skval", condition));

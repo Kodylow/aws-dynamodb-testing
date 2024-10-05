@@ -31,7 +31,7 @@ use std::collections::HashMap;
 ///     .set_string("username", "johndoe")
 ///     .set_number("age", 30.0);
 /// ```
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Item {
     pub(crate) attributes: HashMap<String, AttributeValue>,
 }
@@ -41,6 +41,14 @@ impl Item {
     pub fn new() -> Self {
         Self::default()
     }
+
+    // /// Returns the id of the item, if it exists and is a string.
+    // pub fn id(&self) -> Option<String> {
+    //     self.attributes
+    //         .get("id")
+    //         .and_then(|attr| attr.as_s().ok())
+    //         .map(|s| s.to_string())
+    // }
 
     /// Sets a string attribute.
     ///

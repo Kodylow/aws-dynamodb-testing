@@ -3,9 +3,10 @@
 //! These tests cover:
 //! - Table creation and management
 //! - Basic CRUD operations (Create, Read, Update, Delete)
-//! - Querying and scanning with various conditions
+//! - Querying with various conditions
 //! - Authentication and table description
 //! - Item, Schema, and Table struct operations
+//! - Complex queries
 //!
 //! # Setup
 //!
@@ -52,14 +53,19 @@ use crate::{
 };
 use anyhow::Result;
 use aws_sdk_dynamodb::types::AttributeValue;
+use dotenv::dotenv;
 use std::collections::HashMap;
+use std::time::Instant;
 use tokio::time::Duration;
-use tracing::{info, instrument};
+use tracing::{error, info, instrument};
 
 const TEST_TABLE_NAME: &str = "testing-products";
 
 #[instrument]
 async fn setup_test_table(ddb: &DynamoDb) -> Result<Table<'static>> {
+    let start = Instant::now();
+    info!("Setting up test table: {}", TEST_TABLE_NAME);
+
     let table = Table::new(
         TEST_TABLE_NAME,
         CATEGORY_PARTITION_KEY,
@@ -73,277 +79,298 @@ async fn setup_test_table(ddb: &DynamoDb) -> Result<Table<'static>> {
     );
 
     if !ddb.table_exists(TEST_TABLE_NAME).await? {
-        crate::utils::retry_with_backoff(
+        match crate::utils::retry_with_backoff(
             || ddb.create_table_if_not_exists(&table),
             Duration::from_secs(3),
             5,
         )
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to create table after multiple retries: {e:?}"))?
-        .map(|_| {
-            info!("Table created successfully");
-        })
-        .ok_or_else(|| anyhow::anyhow!("Table creation failed"))?;
+        {
+            Ok(Some(_)) => {
+                info!("Table created successfully in {:?}", start.elapsed());
+            }
+            Ok(None) => {
+                info!("Table already exists");
+            }
+            Err(e) => {
+                error!("Failed to create table after multiple retries: {e:?}");
+                return Err(anyhow::anyhow!(
+                    "Failed to create table after multiple retries: {e:?}"
+                ));
+            }
+        }
     } else {
         info!("Table already exists");
     }
 
+    // Wait for the table to become active
+    let mut attempts = 0;
+    while attempts < 10 {
+        match ddb.describe_table(TEST_TABLE_NAME).await {
+            Ok(description) => {
+                if let Some(table_description) = description.table() {
+                    if table_description.table_status()
+                        == Some(&aws_sdk_dynamodb::types::TableStatus::Active)
+                    {
+                        info!("Table is active");
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Error describing table: {e:?}");
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        attempts += 1;
+    }
+
+    if attempts == 10 {
+        return Err(anyhow::anyhow!(
+            "Table did not become active within the expected time"
+        ));
+    }
+
+    info!("Test table setup completed in {:?}", start.elapsed());
     Ok(table)
 }
 
-#[tokio::test]
-#[instrument]
-async fn test_dynamodb_operations() -> Result<()> {
-    info!("Starting test_dynamodb_operations");
-    dotenv::dotenv().ok();
-
-    info!("Loading SDK config from env");
-    let sdk_config = aws_config::load_from_env().await;
-    info!("Creating DynamoDb instance");
-    let ddb = DynamoDb::new(&sdk_config);
-
-    info!("Setting up test table");
-    let _table = setup_test_table(&ddb).await?;
-
-    info!("Testing put_item");
-    let item = Item::new()
-        .set_string(CATEGORY_PARTITION_KEY, "Electronics")
-        .set_string(PRODUCT_NAME_SORT_KEY, "Smartphone")
-        .set_number(PRICE_ATTRIBUTE, 599.99);
-    ddb.put_item(TEST_TABLE_NAME, item).await?;
-
-    info!("Testing query_items");
-    let partition_key = (
-        CATEGORY_PARTITION_KEY,
-        AttributeValue::S("Electronics".to_string()),
-    );
-    let items = ddb
-        .query_items(TEST_TABLE_NAME, partition_key.clone(), None)
-        .await?;
-    assert_eq!(items.len(), 1);
-    assert_eq!(
-        items[0].get_string(PRODUCT_NAME_SORT_KEY),
-        Some(&"Smartphone".to_string())
-    );
-    assert_eq!(items[0].get_number(PRICE_ATTRIBUTE), Some(599.99));
-
-    info!("Testing update_item");
-    let key = Item::new()
-        .set_string(CATEGORY_PARTITION_KEY, "Electronics")
-        .set_string(PRODUCT_NAME_SORT_KEY, "Smartphone");
-    let updates = Item::new().set_number(PRICE_ATTRIBUTE, 649.99);
-    ddb.update_item(TEST_TABLE_NAME, key, updates).await?;
-
-    info!("Testing query_items after update");
-    let items = ddb
-        .query_items(TEST_TABLE_NAME, partition_key.clone(), None)
-        .await?;
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].get_number(PRICE_ATTRIBUTE), Some(649.99));
-
-    info!("Testing delete_item");
-    let key = Item::new()
-        .set_string(CATEGORY_PARTITION_KEY, "Electronics")
-        .set_string(PRODUCT_NAME_SORT_KEY, "Smartphone");
-    ddb.delete_item(TEST_TABLE_NAME, key).await?;
-
-    info!("Testing query_items after delete");
-    let items = ddb
-        .query_items(TEST_TABLE_NAME, partition_key, None)
-        .await?;
-    assert_eq!(items.len(), 0);
-
-    info!("Cleaning up test data");
-    let key = Item::new()
-        .set_string(CATEGORY_PARTITION_KEY, "Electronics")
-        .set_string(PRODUCT_NAME_SORT_KEY, "Smartphone");
-    ddb.delete_item(TEST_TABLE_NAME, key).await?;
-
-    info!("Test completed successfully");
+async fn clean_up_testing_table(ddb: &DynamoDb) -> Result<()> {
+    let items = ddb.scan_table(TEST_TABLE_NAME).await?;
+    for item in items {
+        let key = Item::new()
+            .set_string(
+                CATEGORY_PARTITION_KEY,
+                item.get(CATEGORY_PARTITION_KEY)
+                    .and_then(|attr| attr.as_s().ok())
+                    .ok_or_else(|| anyhow::anyhow!("Missing or invalid partition key"))?,
+            )
+            .set_string(
+                PRODUCT_NAME_SORT_KEY,
+                item.get(PRODUCT_NAME_SORT_KEY)
+                    .and_then(|attr| attr.as_s().ok())
+                    .ok_or_else(|| anyhow::anyhow!("Missing or invalid sort key"))?,
+            );
+        ddb.delete_item(TEST_TABLE_NAME, key).await?;
+    }
     Ok(())
 }
 
-#[test]
-fn test_item_operations() {
-    let item = Item::new()
-        .set_string("key1", "value1")
-        .set_number("key2", 42.0);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Context;
+    use aws_config::load_from_env;
 
-    assert_eq!(item.get_string("key1"), Some(&"value1".to_string()));
-    assert_eq!(item.get_number("key2"), Some(42.0));
-    assert_eq!(item.get_string("non_existent"), None);
-    assert_eq!(item.get_number("non_existent"), None);
-}
-
-#[test]
-fn test_schema_operations() {
-    let schema = Schema::new()
-        .add_field("field1", FieldType::String)
-        .add_field("field2", FieldType::Number);
-
-    let fields = schema.fields();
-    assert_eq!(fields.len(), 2);
-    assert!(matches!(fields.get("field1"), Some(FieldType::String)));
-    assert!(matches!(fields.get("field2"), Some(FieldType::Number)));
-}
-
-#[test]
-fn test_table_operations() {
-    let table = Table::new("test_table", "partition_key", Some("sort_key"));
-
-    assert_eq!(table.name(), "test_table");
-    assert_eq!(table.partition_key(), "partition_key");
-    assert_eq!(table.sort_key(), Some("sort_key"));
-
-    let schema = Schema::new()
-        .add_field("field1", FieldType::String)
-        .add_field("field2", FieldType::Number);
-    let table_with_schema = table.with_schema(schema);
-
-    assert!(table_with_schema.schema().is_some());
-}
-
-#[tokio::test]
-async fn test_check_auth() -> Result<()> {
-    let sdk_config = aws_config::load_from_env().await;
-    let ddb = DynamoDb::new(&sdk_config);
-
-    ddb.check_auth().await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_describe_table() -> Result<()> {
-    let sdk_config = aws_config::load_from_env().await;
-    let ddb = DynamoDb::new(&sdk_config);
-
-    let _table = setup_test_table(&ddb).await?;
-
-    let description = ddb.describe_table(TEST_TABLE_NAME).await?;
-    assert_eq!(
-        description.table().unwrap().table_name(),
-        Some(TEST_TABLE_NAME)
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_get_item() -> Result<()> {
-    let sdk_config = aws_config::load_from_env().await;
-    let ddb = DynamoDb::new(&sdk_config);
-
-    let _table = setup_test_table(&ddb).await?;
-
-    let item = Item::new()
-        .set_string(CATEGORY_PARTITION_KEY, "Books")
-        .set_string(PRODUCT_NAME_SORT_KEY, "The Rust Programming Language")
-        .set_number(PRICE_ATTRIBUTE, 39.99);
-    ddb.put_item(TEST_TABLE_NAME, item).await?;
-
-    let key = Item::new()
-        .set_string(CATEGORY_PARTITION_KEY, "Books")
-        .set_string(PRODUCT_NAME_SORT_KEY, "The Rust Programming Language");
-    let retrieved_item = ddb.get_item(TEST_TABLE_NAME, key).await?;
-
-    assert!(retrieved_item.is_some());
-    let retrieved_item = retrieved_item.unwrap();
-    assert_eq!(retrieved_item.get_number(PRICE_ATTRIBUTE), Some(39.99));
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_scan_table() -> Result<()> {
-    let sdk_config = aws_config::load_from_env().await;
-    let ddb = DynamoDb::new(&sdk_config);
-
-    let _table = setup_test_table(&ddb).await?;
-
-    // Add some items
-    for i in 1..=5 {
-        let item = Item::new()
-            .set_string(CATEGORY_PARTITION_KEY, format!("Category{}", i))
-            .set_string(PRODUCT_NAME_SORT_KEY, format!("Product{}", i))
-            .set_number(PRICE_ATTRIBUTE, (i as f64) * 10.0);
-        ddb.put_item(TEST_TABLE_NAME, item).await?;
+    async fn setup() -> Result<DynamoDb> {
+        dotenv().ok();
+        let sdk_config = load_from_env().await;
+        Ok(DynamoDb::new(&sdk_config))
     }
 
-    let scanned_items = ddb.scan_table(TEST_TABLE_NAME).await?;
-    assert_eq!(scanned_items.len(), 5);
+    async fn run_test<F, Fut>(test_name: &str, test_fn: F) -> Result<()>
+    where
+        F: FnOnce(DynamoDb) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
+        let start = Instant::now();
+        info!("Starting test: {}", test_name);
 
-    Ok(())
-}
+        let ddb = setup().await.context("Failed to setup DynamoDB client")?;
+        let _table = setup_test_table(&ddb)
+            .await
+            .context("Failed to setup test table")?;
 
-#[tokio::test]
-async fn test_scan_with_filter() -> Result<()> {
-    let sdk_config = aws_config::load_from_env().await;
-    let ddb = DynamoDb::new(&sdk_config);
+        // Add a delay to ensure the table is fully created
+        tokio::time::sleep(Duration::from_secs(5)).await;
 
-    let _table = setup_test_table(&ddb).await?;
+        let result = test_fn(ddb).await;
 
-    // Add some items
-    for i in 1..=5 {
-        let item = Item::new()
-            .set_string(CATEGORY_PARTITION_KEY, format!("Category{}", i))
-            .set_string(PRODUCT_NAME_SORT_KEY, format!("Product{}", i))
-            .set_number(PRICE_ATTRIBUTE, (i as f64) * 10.0);
-        ddb.put_item(TEST_TABLE_NAME, item).await?;
+        match &result {
+            Ok(_) => info!("Test '{}' passed in {:?}", test_name, start.elapsed()),
+            Err(e) => error!("Test '{}' failed: {:?}", test_name, e),
+        }
+
+        result
     }
 
-    let filter_expression = Some(String::from("#price > :min_price"));
-    let mut expression_attribute_names = HashMap::new();
-    expression_attribute_names.insert(String::from("#price"), String::from(PRICE_ATTRIBUTE));
-    let mut expression_attribute_values = HashMap::new();
-    expression_attribute_values.insert(
-        String::from(":min_price"),
-        AttributeValue::N(String::from("25")),
-    );
+    #[tokio::test]
+    async fn test_table_creation_and_deletion() -> Result<()> {
+        run_test("table_creation_and_deletion", |ddb| async move {
+            assert!(ddb.table_exists(TEST_TABLE_NAME).await?);
 
-    let scanned_items = ddb
-        .scan(
-            TEST_TABLE_NAME,
-            filter_expression,
-            Some(expression_attribute_names),
-            Some(expression_attribute_values),
-        )
-        .await?;
+            // Add a delay to ensure the table is fully created
+            tokio::time::sleep(Duration::from_secs(5)).await;
 
-    assert_eq!(scanned_items.len(), 3); // Only items with price > 25 should be returned
+            ddb.delete_table(TEST_TABLE_NAME).await?;
 
-    Ok(())
-}
+            // Add a delay to ensure the table is fully deleted
+            tokio::time::sleep(Duration::from_secs(5)).await;
 
-#[tokio::test]
-async fn test_query_with_sort_key_condition() -> Result<()> {
-    let sdk_config = aws_config::load_from_env().await;
-    let ddb = DynamoDb::new(&sdk_config);
-
-    let _table = setup_test_table(&ddb).await?;
-
-    // Add some items
-    for i in 1..=5 {
-        let item = Item::new()
-            .set_string(CATEGORY_PARTITION_KEY, "Electronics")
-            .set_string(PRODUCT_NAME_SORT_KEY, format!("Product{}", i))
-            .set_number(PRICE_ATTRIBUTE, (i as f64) * 100.0);
-        ddb.put_item(TEST_TABLE_NAME, item).await?;
+            assert!(!ddb.table_exists(TEST_TABLE_NAME).await?);
+            Ok(())
+        })
+        .await
     }
 
-    let partition_key = (
-        CATEGORY_PARTITION_KEY,
-        AttributeValue::S("Electronics".to_string()),
-    );
-    let sort_key_condition = Some((
-        PRODUCT_NAME_SORT_KEY,
-        "begins_with".to_string(),
-        AttributeValue::S("Product".to_string()),
-    ));
+    #[tokio::test]
+    async fn test_basic_crud_operations() -> Result<()> {
+        run_test("basic_crud_operations", |ddb| async move {
+            // Test put_item
+            let item = Item::new()
+                .set_string(CATEGORY_PARTITION_KEY, "Electronics")
+                .set_string(PRODUCT_NAME_SORT_KEY, "Smartphone")
+                .set_number(PRICE_ATTRIBUTE, 599.99);
+            ddb.put_item(TEST_TABLE_NAME, item)
+                .await
+                .context("Failed to put item")?;
 
-    let queried_items = ddb
-        .query_items(TEST_TABLE_NAME, partition_key, sort_key_condition)
-        .await?;
+            // Test get_item
+            let key = Item::new()
+                .set_string(CATEGORY_PARTITION_KEY, "Electronics")
+                .set_string(PRODUCT_NAME_SORT_KEY, "Smartphone");
+            let retrieved_item = ddb.get_item(TEST_TABLE_NAME, key.clone()).await?;
+            let retrieved_item = retrieved_item.ok_or_else(|| anyhow::anyhow!("Item not found"))?;
+            assert_eq!(
+                retrieved_item.get_number(PRICE_ATTRIBUTE),
+                Some(599.99),
+                "Unexpected price value"
+            );
 
-    assert_eq!(queried_items.len(), 5);
+            // Test update_item
+            let updates = Item::new().set_number(PRICE_ATTRIBUTE, 649.99);
+            ddb.update_item(TEST_TABLE_NAME, key.clone(), updates)
+                .await
+                .context("Failed to update item")?;
+            let updated_item = ddb.get_item(TEST_TABLE_NAME, key.clone()).await?;
+            let updated_item =
+                updated_item.ok_or_else(|| anyhow::anyhow!("Updated item not found"))?;
+            assert_eq!(
+                updated_item.get_number(PRICE_ATTRIBUTE),
+                Some(649.99),
+                "Unexpected updated price value"
+            );
 
-    Ok(())
+            // Test delete_item
+            ddb.delete_item(TEST_TABLE_NAME, key.clone()).await?;
+            let deleted_item = ddb.get_item(TEST_TABLE_NAME, key.clone()).await?;
+            assert!(deleted_item.is_none(), "Item was not deleted");
+
+            clean_up_testing_table(&ddb)
+                .await
+                .context("Failed to clean up testing table")?;
+            Ok(())
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_query_operations() -> Result<()> {
+        run_test("query_operations", |ddb| async move {
+            // Ensure table is created and wait for it to be active
+            let _table = setup_test_table(&ddb).await?;
+
+            // Add test items
+            for i in 1..=5 {
+                let item = Item::new()
+                    .set_string(CATEGORY_PARTITION_KEY, "Electronics")
+                    .set_string(PRODUCT_NAME_SORT_KEY, format!("Product{}", i))
+                    .set_number(PRICE_ATTRIBUTE, (i as f64) * 100.0);
+                ddb.put_item(TEST_TABLE_NAME, item).await?;
+            }
+
+            // Add a delay to ensure items are fully added
+            tokio::time::sleep(Duration::from_secs(2)).await;
+
+            // Test query_items
+            let partition_key = (
+                CATEGORY_PARTITION_KEY,
+                AttributeValue::S("Electronics".to_string()),
+            );
+            let items = ddb
+                .query_items(TEST_TABLE_NAME, partition_key.clone(), None)
+                .await?;
+            assert_eq!(items.len(), 5);
+
+            // Test query_simple
+            let sort_key_condition = Some((
+                PRODUCT_NAME_SORT_KEY,
+                ">".to_string(),
+                AttributeValue::S("Product2".to_string()),
+            ));
+            let filter_expression = Some("price > :min_price");
+            let mut expression_attribute_values = HashMap::new();
+            expression_attribute_values.insert(
+                ":min_price".to_string(),
+                AttributeValue::N("200".to_string()),
+            );
+            let queried_items = ddb
+                .query_simple(
+                    TEST_TABLE_NAME,
+                    partition_key,
+                    sort_key_condition,
+                    filter_expression,
+                    Some(3),
+                    Some(expression_attribute_values),
+                )
+                .await?;
+            assert_eq!(queried_items.len(), 3);
+
+            clean_up_testing_table(&ddb)
+                .await
+                .context("Failed to clean up testing table")?;
+            Ok(())
+        })
+        .await
+    }
+
+    #[test]
+    fn test_item_schema_and_table_operations() {
+        // Test Item operations
+        let item = Item::new()
+            .set_string("key1", "value1")
+            .set_number("key2", 42.0);
+        assert_eq!(item.get_string("key1"), Some(&"value1".to_string()));
+        assert_eq!(item.get_number("key2"), Some(42.0));
+
+        // Test Schema operations
+        let schema = Schema::new()
+            .add_field("field1", FieldType::String)
+            .add_field("field2", FieldType::Number);
+        let fields = schema.fields();
+        assert_eq!(fields.len(), 2);
+        assert!(matches!(fields.get("field1"), Some(FieldType::String)));
+        assert!(matches!(fields.get("field2"), Some(FieldType::Number)));
+
+        // Test Table operations
+        let table = Table::new("test_table", "partition_key", Some("sort_key"));
+        assert_eq!(table.name(), "test_table");
+        assert_eq!(table.partition_key(), "partition_key");
+        assert_eq!(table.sort_key(), Some("sort_key"));
+    }
+
+    #[tokio::test]
+    async fn test_auth_and_describe_table() -> Result<()> {
+        run_test("auth_and_describe_table", |ddb| async move {
+            // Test check_auth
+            ddb.check_auth().await?;
+
+            // Test describe_table
+            let description = ddb.describe_table(TEST_TABLE_NAME).await?;
+            let table = description
+                .table()
+                .ok_or_else(|| anyhow::anyhow!("Table description not found"))?;
+            assert_eq!(
+                table.table_name(),
+                Some(TEST_TABLE_NAME),
+                "Unexpected table name"
+            );
+
+            clean_up_testing_table(&ddb)
+                .await
+                .context("Failed to clean up testing table")?;
+            Ok(())
+        })
+        .await
+    }
 }

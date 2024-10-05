@@ -17,6 +17,9 @@ use tracing::info;
 /// - query: Query items from the table
 /// - scan: Scan items from the table
 /// - list: List all items in the table
+/// - query_flexible: Perform a flexible query operation with full control over all query parameters
+/// - query_simple: Provide a simplified interface for common query operations
+/// - scan_paginated: Enable users to perform a paginated scan operation on the table
 /// - exit: Exit the program
 ///
 /// # Arguments
@@ -29,7 +32,7 @@ use tracing::info;
 /// Returns `Ok(())` if the function completes successfully, or an error if any operation fails.
 pub async fn run(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     loop {
-        let command = prompt("Enter command (info/put/get/update/delete/query/scan/list/exit): ")?;
+        let command = prompt("Enter command (info/put/get/update/delete/query/scan/list/query_flexible/query_simple/scan_paginated/exit): ", None)?;
         match command.as_str() {
             "info" => print_info(ddb, table).await?,
             "put" => put_item(ddb, table).await?,
@@ -39,6 +42,9 @@ pub async fn run(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
             "query" => query_items(ddb, table).await?,
             "scan" => scan_items(ddb, table).await?,
             "list" => list_items(ddb, table).await?,
+            "query_flexible" => query_flexible_items(ddb, table).await?,
+            "query_simple" => query_simple_items(ddb, table).await?,
+            "scan_paginated" => scan_paginated_items(ddb, table).await?,
             "exit" => break,
             _ => println!("Unknown command. Please try again."),
         }
@@ -123,7 +129,7 @@ async fn put_item(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
         .fields()
         .iter()
         .fold(Item::new(), |item, (field_name, field_type)| {
-            let value = prompt(&format!("Enter {}: ", field_name)).unwrap();
+            let value = prompt(&format!("Enter {}: ", field_name), None).unwrap();
             match field_type {
                 FieldType::String => item.set_string(field_name, value),
                 FieldType::Number => item.set_number(field_name, value.parse::<f64>().unwrap()),
@@ -213,33 +219,12 @@ async fn delete_item(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
 ///
 /// Returns `Ok(())` if the query completes successfully, or an error if the operation fails.
 async fn query_items(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
-    let key_condition_expression = prompt("Enter key condition expression: ")?;
-    let mut expression_attribute_names = HashMap::new();
-    let mut expression_attribute_values = HashMap::new();
-
-    loop {
-        let name = prompt("Enter attribute name (or press Enter to finish): ")?;
-        if name.is_empty() {
-            break;
-        }
-        let placeholder = prompt("Enter attribute name placeholder: ")?;
-        expression_attribute_names.insert(placeholder, name);
-    }
-
-    loop {
-        let value_placeholder = prompt("Enter value placeholder (or press Enter to finish): ")?;
-        if value_placeholder.is_empty() {
-            break;
-        }
-        let value_type = prompt("Enter value type (S for string, N for number): ")?;
-        let value = prompt("Enter value: ")?;
-        let attribute_value = match value_type.as_str() {
-            "S" => AttributeValue::S(value),
-            "N" => AttributeValue::N(value),
-            _ => return Err(anyhow!("Unsupported value type")),
-        };
-        expression_attribute_values.insert(value_placeholder, attribute_value);
-    }
+    let key_condition_expression = prompt(
+        "Enter key condition expression (e.g., 'partitionKey = :pk'): ",
+        None,
+    )?;
+    let expression_attribute_names = get_expression_attribute_names()?;
+    let expression_attribute_values = get_expression_attribute_values()?;
 
     let items = ddb
         .query(
@@ -250,9 +235,13 @@ async fn query_items(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
         )
         .await?;
 
-    println!("\n--- Query Results ---");
-    items.iter().for_each(|item| println!("{:?}", item));
-    println!("---------------------\n");
+    print_items(
+        "Query Results",
+        &items
+            .iter()
+            .map(|item| item.attributes.clone())
+            .collect::<Vec<_>>(),
+    );
     Ok(())
 }
 
@@ -270,62 +259,37 @@ async fn query_items(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
 ///
 /// Returns `Ok(())` if the scan completes successfully, or an error if the operation fails.
 async fn scan_items(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
-    let filter_expression = prompt("Enter filter expression (or press Enter for no filter): ")?;
-    let filter_expression = if filter_expression.is_empty() {
-        None
+    let filter_expression = prompt(
+        "Enter filter expression (or press Enter for no filter, e.g., 'attribute_name > :value'): ",
+        None,
+    )?;
+
+    let (expression_attribute_names, expression_attribute_values) = if !filter_expression.is_empty()
+    {
+        (
+            get_expression_attribute_names()?,
+            get_expression_attribute_values()?,
+        )
     } else {
-        Some(filter_expression)
+        (HashMap::new(), HashMap::new())
     };
-
-    let mut expression_attribute_names = HashMap::new();
-    let mut expression_attribute_values = HashMap::new();
-
-    if filter_expression.is_some() {
-        loop {
-            let name = prompt("Enter attribute name (or press Enter to finish): ")?;
-            if name.is_empty() {
-                break;
-            }
-            let placeholder = prompt("Enter attribute name placeholder: ")?;
-            expression_attribute_names.insert(placeholder, name);
-        }
-
-        loop {
-            let value_placeholder = prompt("Enter value placeholder (or press Enter to finish): ")?;
-            if value_placeholder.is_empty() {
-                break;
-            }
-            let value_type = prompt("Enter value type (S for string, N for number): ")?;
-            let value = prompt("Enter value: ")?;
-            let attribute_value = match value_type.as_str() {
-                "S" => AttributeValue::S(value),
-                "N" => AttributeValue::N(value),
-                _ => return Err(anyhow!("Unsupported value type")),
-            };
-            expression_attribute_values.insert(value_placeholder, attribute_value);
-        }
-    }
 
     let items = ddb
         .scan(
             table.name(),
-            filter_expression,
-            if expression_attribute_names.is_empty() {
-                None
-            } else {
-                Some(expression_attribute_names)
-            },
-            if expression_attribute_values.is_empty() {
-                None
-            } else {
-                Some(expression_attribute_values)
-            },
+            Some(filter_expression),
+            Some(expression_attribute_names),
+            Some(expression_attribute_values),
         )
         .await?;
 
-    println!("\n--- Scan Results ---");
-    items.iter().for_each(|item| println!("{:?}", item));
-    println!("--------------------\n");
+    print_items(
+        "Scan Results",
+        &items
+            .iter()
+            .map(|item| item.attributes.clone())
+            .collect::<Vec<_>>(),
+    );
     Ok(())
 }
 
@@ -344,10 +308,10 @@ fn create_key_item(table: &Table<'_>) -> Result<Item> {
     let mut key = Item::new();
     key = key.set_string(
         table.partition_key(),
-        prompt(&format!("Enter {}: ", table.partition_key()))?,
+        prompt(&format!("Enter {}: ", table.partition_key()), None)?,
     );
     if let Some(sort_key) = table.sort_key() {
-        key = key.set_string(sort_key, prompt(&format!("Enter {}: ", sort_key))?);
+        key = key.set_string(sort_key, prompt(&format!("Enter {}: ", sort_key), None)?);
     }
     Ok(key)
 }
@@ -375,8 +339,8 @@ fn create_update_item(table: &Table<'_>) -> Result<Item> {
             .sort_key()
             .map_or(true, |sort_key| field_name != sort_key);
         if is_not_partition_key && is_not_sort_key {
-            if prompt(&format!("Update {}? (y/n): ", field_name))?.to_lowercase() == "y" {
-                let value = prompt(&format!("Enter new value for {}: ", field_name))?;
+            if prompt(&format!("Update {}? (y/n): ", field_name), None)?.to_lowercase() == "y" {
+                let value = prompt(&format!("Enter new value for {}: ", field_name), None)?;
                 updates = match field_type {
                     FieldType::String => updates.set_string(field_name, value),
                     FieldType::Number => updates.set_number(field_name, value.parse::<f64>()?),
@@ -418,10 +382,231 @@ async fn list_items(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
 /// # Returns
 ///
 /// Returns a Result containing the user's input as a String if successful, or an error if the operation fails.
-fn prompt(message: &str) -> Result<String> {
-    print!("{}", message);
+fn prompt(message: &str, example: Option<&str>) -> Result<String> {
+    let full_message = if let Some(ex) = example {
+        format!("{} (e.g., {}): ", message, ex)
+    } else {
+        format!("{}: ", message)
+    };
+    print!("{}", full_message);
     io::stdout().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     Ok(input.trim().to_string())
+}
+
+fn get_expression_attribute_names() -> Result<HashMap<String, String>> {
+    let mut names = HashMap::new();
+    loop {
+        let name = prompt(
+            "Enter attribute name (or press Enter to finish)",
+            Some("#n"),
+        )?;
+        if name.is_empty() {
+            break;
+        }
+        let placeholder = prompt("Enter attribute name placeholder", Some("#name"))?;
+        names.insert(placeholder, name);
+    }
+    Ok(names)
+}
+
+fn get_expression_attribute_values() -> Result<HashMap<String, AttributeValue>> {
+    let mut values = HashMap::new();
+    loop {
+        let placeholder = prompt(
+            "Enter value placeholder (or press Enter to finish)",
+            Some(":v"),
+        )?;
+        if placeholder.is_empty() {
+            break;
+        }
+        let value_type = prompt("Enter value type (S for string, N for number)", Some("S"))?;
+        let value = prompt("Enter value", Some("example_value"))?;
+        let attribute_value = match value_type.as_str() {
+            "S" => AttributeValue::S(value),
+            "N" => AttributeValue::N(value),
+            _ => return Err(anyhow!("Unsupported value type")),
+        };
+        values.insert(placeholder, attribute_value);
+    }
+    Ok(values)
+}
+
+/// Performs a flexible query operation on the DynamoDB table.
+async fn query_flexible_items(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
+    let key_condition_expression =
+        prompt("Enter key condition expression", Some("partitionKey = :pk"))?;
+    let filter_expression = prompt_optional("Enter filter expression", Some("attribute > :value"))?;
+    let projection_expression =
+        prompt_optional("Enter projection expression", Some("attr1, attr2, attr3"))?;
+
+    let expression_attribute_names = get_expression_attribute_names()?;
+    let expression_attribute_values = get_expression_attribute_values()?;
+
+    let limit = prompt_optional("Enter limit", Some("10"))?.and_then(|s| s.parse().ok());
+
+    let scan_index_forward = prompt_bool("Scan index forward?", true)?;
+
+    let index_name = prompt_optional("Enter index name", Some("GSI1"))?;
+
+    let items = ddb
+        .query_flexible(
+            table.name(),
+            &key_condition_expression,
+            filter_expression.as_deref(),
+            projection_expression.as_deref(),
+            Some(expression_attribute_names),
+            Some(expression_attribute_values),
+            limit,
+            Some(scan_index_forward),
+            index_name.as_deref(),
+        )
+        .await?;
+
+    print_items(
+        "Query Flexible Results",
+        &items
+            .iter()
+            .map(|item| item.attributes.clone())
+            .collect::<Vec<_>>(),
+    );
+    Ok(())
+}
+
+/// Performs a simple query operation on the DynamoDB table.
+async fn query_simple_items(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
+    let partition_key_name = table.partition_key();
+    let partition_key_value = prompt(
+        &format!("Enter {} value", partition_key_name),
+        Some("example_value"),
+    )?;
+    let partition_key = (partition_key_name, AttributeValue::S(partition_key_value));
+
+    let sort_key_condition = table.sort_key().map(|sort_key| {
+        let condition = prompt(
+            &format!(
+                "Enter condition for {} (e.g., '>', '<', '=', 'BETWEEN')",
+                sort_key
+            ),
+            Some(">="),
+        )
+        .unwrap();
+        let value = prompt(
+            &format!("Enter value for {}", sort_key),
+            Some("example_value"),
+        )
+        .unwrap();
+        (sort_key, condition, AttributeValue::S(value))
+    });
+
+    let filter_expression = prompt_optional("Enter filter expression", Some("attribute > :value"))?;
+
+    let limit = prompt_optional("Enter limit", Some("10"))?.and_then(|s| s.parse().ok());
+
+    let expression_attribute_values = get_expression_attribute_values()?;
+
+    let items = ddb
+        .query_simple(
+            table.name(),
+            partition_key,
+            sort_key_condition,
+            filter_expression.as_deref(),
+            limit,
+            Some(expression_attribute_values),
+        )
+        .await?;
+
+    print_items(
+        "Query Simple Results",
+        &items
+            .iter()
+            .map(|item| item.attributes.clone())
+            .collect::<Vec<_>>(),
+    );
+    Ok(())
+}
+
+/// Performs a paginated scan operation on the DynamoDB table.
+async fn scan_paginated_items(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
+    let filter_expression = prompt_optional("Enter filter expression", Some("attribute > :value"))?;
+    let projection_expression =
+        prompt_optional("Enter projection expression", Some("attr1, attr2, attr3"))?;
+
+    let expression_attribute_names = get_expression_attribute_names()?;
+    let expression_attribute_values = get_expression_attribute_values()?;
+    let filter_expression = match filter_expression {
+        Some(expr) if !expr.is_empty() => Some(expr),
+        _ => None,
+    };
+
+    let projection_expression = match projection_expression {
+        Some(expr) if !expr.is_empty() => Some(expr),
+        _ => None,
+    };
+
+    let limit = prompt("Enter limit (or press Enter for none)", Some("10"))?;
+    let limit = if limit.is_empty() {
+        None
+    } else {
+        Some(limit.parse()?)
+    };
+
+    let mut exclusive_start_key = None;
+    let mut page_num = 1;
+
+    loop {
+        let (items, last_evaluated_key) = ddb
+            .scan_paginated(
+                table.name(),
+                filter_expression.as_deref(),
+                projection_expression.as_deref(),
+                Some(expression_attribute_names.clone()),
+                Some(expression_attribute_values.clone()),
+                limit,
+                exclusive_start_key.clone(),
+            )
+            .await?;
+
+        print_items(
+            &format!("Scan Paginated Results (Page {})", page_num),
+            &items
+                .iter()
+                .map(|item| item.attributes.clone())
+                .collect::<Vec<_>>(),
+        );
+
+        if last_evaluated_key.is_none() {
+            break;
+        }
+
+        let continue_scan = prompt("Continue to next page? (y/n)", Some("y"))?;
+        if continue_scan.to_lowercase() != "y" {
+            break;
+        } else {
+            exclusive_start_key = last_evaluated_key;
+            page_num += 1;
+        }
+    }
+
+    Ok(())
+}
+
+fn print_items(title: &str, items: &[HashMap<String, AttributeValue>]) {
+    println!("\n--- {} ---", title);
+    items.iter().for_each(|item| println!("{:?}", item));
+    println!("{}", "-".repeat(title.len() + 8));
+}
+
+fn prompt_optional(message: &str, example: Option<&str>) -> Result<Option<String>> {
+    let input = prompt(message, example)?;
+    Ok(if input.is_empty() { None } else { Some(input) })
+}
+
+fn prompt_bool(message: &str, default: bool) -> Result<bool> {
+    let input = prompt(
+        &format!("{} (y/n)", message),
+        Some(if default { "y" } else { "n" }),
+    )?;
+    Ok(input.to_lowercase().starts_with('y') || (input.is_empty() && default))
 }
