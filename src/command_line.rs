@@ -25,6 +25,8 @@ pub async fn run(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
 
 async fn print_info(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     let table_info = ddb.describe_table(table.name()).await?;
+    let items = ddb.scan_table(table.name()).await?;
+
     println!("\n--- Table Information ---");
     println!("Table Name: {}", table.name());
     println!("Partition Key: {}", table.partition_key());
@@ -37,14 +39,23 @@ async fn print_info(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
             println!("  {}: {:?}", field, field_type);
         }
     }
-    println!(
-        "Item Count: {}",
-        table_info.table().unwrap().item_count().unwrap_or(0)
-    );
-    println!(
-        "Table Size (bytes): {}",
-        table_info.table().unwrap().table_size_bytes().unwrap_or(0)
-    );
+
+    // Calculate actual item count and size
+    let item_count = items.len();
+    let table_size_bytes: usize = items
+        .iter()
+        .map(|item| {
+            item.values()
+                .map(|attr| match attr.as_s() {
+                    Ok(s) => s.len(),
+                    Err(_) => attr.as_n().map_or(0, |n| n.len()),
+                })
+                .sum::<usize>()
+        })
+        .sum();
+
+    println!("Item Count: {}", item_count);
+    println!("Table Size (bytes): {}", table_size_bytes);
     println!(
         "Table Status: {:?}",
         table_info.table().unwrap().table_status()
