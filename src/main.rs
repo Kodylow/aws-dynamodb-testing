@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
             Item::new()
                 .set_string(CATEGORY_PARTITION_KEY, "living-room")
                 .set_string(PRODUCT_NAME_SORT_KEY, "couch")
-                .set_number(PRICE_ATTRIBUTE, "375.0"),
+                .set_number(PRICE_ATTRIBUTE, 375.0),
         )
         .await?;
 
