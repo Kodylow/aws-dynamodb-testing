@@ -188,10 +188,104 @@ impl DynamoDb {
 
         Ok(items)
     }
+
+    /// Gets an item from a DynamoDB table.
+    pub async fn get_item(&self, table_name: &str, key: Item) -> Result<Option<Item>> {
+        let response = self
+            .client
+            .get_item()
+            .table_name(table_name)
+            .set_key(Some(key.attributes))
+            .send()
+            .await?;
+
+        Ok(response.item.map(|attrs| Item { attributes: attrs }))
+    }
+
+    /// Updates an item in a DynamoDB table.
+    pub async fn update_item(&self, table_name: &str, key: Item, updates: Item) -> Result<()> {
+        let mut update_expression = String::new();
+        let mut expression_attribute_names = HashMap::new();
+        let mut expression_attribute_values = HashMap::new();
+
+        for (i, (attr_name, attr_value)) in updates.attributes.iter().enumerate() {
+            let placeholder = format!("#attr{}", i);
+            let value_placeholder = format!(":val{}", i);
+
+            if i > 0 {
+                update_expression.push_str(", ");
+            }
+            update_expression.push_str(&format!("{} = {}", placeholder, value_placeholder));
+
+            expression_attribute_names.insert(placeholder, attr_name.clone());
+            expression_attribute_values.insert(value_placeholder, attr_value.clone());
+        }
+
+        self.client
+            .update_item()
+            .table_name(table_name)
+            .set_key(Some(key.attributes))
+            .update_expression(format!("SET {}", update_expression))
+            .set_expression_attribute_names(Some(expression_attribute_names))
+            .set_expression_attribute_values(Some(expression_attribute_values))
+            .send()
+            .await?;
+
+        info!("Item updated in '{table_name}'");
+        Ok(())
+    }
+
+    /// Deletes an item from a DynamoDB table.
+    pub async fn delete_item(&self, table_name: &str, key: Item) -> Result<()> {
+        self.client
+            .delete_item()
+            .table_name(table_name)
+            .set_key(Some(key.attributes))
+            .send()
+            .await?;
+
+        info!("Item deleted from '{table_name}'");
+        Ok(())
+    }
+
+    /// Queries items from a DynamoDB table.
+    pub async fn query_items(
+        &self,
+        table_name: &str,
+        partition_key: (&str, AttributeValue),
+        sort_key_condition: Option<(&str, String, AttributeValue)>,
+    ) -> Result<Vec<Item>> {
+        let mut query = self
+            .client
+            .query()
+            .table_name(table_name)
+            .key_condition_expression("#pk = :pkval")
+            .expression_attribute_names("#pk", partition_key.0)
+            .expression_attribute_values(":pkval", partition_key.1);
+
+        if let Some((sort_key, condition, value)) = sort_key_condition {
+            query = query
+                .key_condition_expression(format!(
+                    "#pk = :pkval AND {} {} :skval",
+                    sort_key, condition
+                ))
+                .expression_attribute_names("#sk", sort_key)
+                .expression_attribute_values(":skval", value);
+        }
+
+        let response = query.send().await?;
+
+        Ok(response
+            .items
+            .unwrap_or_default()
+            .into_iter()
+            .map(|attrs| Item { attributes: attrs })
+            .collect())
+    }
 }
 
 /// Represents a DynamoDB item with various attribute types.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Item {
     attributes: HashMap<String, AttributeValue>,
 }
@@ -214,6 +308,19 @@ impl Item {
         self.attributes
             .insert(key.into(), AttributeValue::N(value.into().to_string()));
         self
+    }
+
+    /// Gets the value of an attribute as a string.
+    pub fn get_string(&self, key: &str) -> Option<&String> {
+        self.attributes.get(key).and_then(|av| av.as_s().ok())
+    }
+
+    /// Gets the value of an attribute as a number (f64).
+    pub fn get_number(&self, key: &str) -> Option<f64> {
+        self.attributes
+            .get(key)
+            .and_then(|av| av.as_n().ok())
+            .and_then(|n| n.parse().ok())
     }
 }
 
