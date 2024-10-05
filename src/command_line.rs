@@ -278,7 +278,6 @@ async fn query_items(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
         projection_expression: None,
         limit,
         scan_index_forward: None,
-        exclusive_start_key: None,
         index_name: None,
     };
 
@@ -510,7 +509,6 @@ async fn query_flexible_items(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
         limit,
         scan_index_forward: Some(scan_index_forward),
         index_name: index_name.as_deref(),
-        exclusive_start_key: None,
     };
 
     let items = ddb.query_flexible(params).await?;

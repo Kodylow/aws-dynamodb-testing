@@ -487,7 +487,6 @@ impl DynamoDb {
             projection_expression: None,
             limit,
             scan_index_forward: None,
-            exclusive_start_key: None,
             index_name: None,
         })
         .await
@@ -569,6 +568,5 @@ pub struct QueryFlexibleParams<'a> {
     pub projection_expression: Option<&'a str>,
     pub limit: Option<i32>,
     pub scan_index_forward: Option<bool>,
-    pub exclusive_start_key: Option<HashMap<String, AttributeValue>>,
     pub index_name: Option<&'a str>,
 }
