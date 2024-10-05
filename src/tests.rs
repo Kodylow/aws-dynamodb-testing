@@ -1,3 +1,51 @@
+//! Integration tests for DynamoDB operations
+//!
+//! These tests cover:
+//! - Table creation and management
+//! - Basic CRUD operations (Create, Read, Update, Delete)
+//! - Querying and scanning with various conditions
+//! - Authentication and table description
+//! - Item, Schema, and Table struct operations
+//!
+//! # Setup
+//!
+//! These tests require a running DynamoDB instance and proper AWS credentials.
+//!
+//! ## Credentials
+//!
+//! Set the following environment variables in your `.env` file:
+//!
+//! ```
+//! AWS_ACCESS_KEY_ID=your_access_key
+//! AWS_SECRET_ACCESS_KEY=your_secret_key
+//! AWS_REGION=your_preferred_region
+//! ```
+//!
+//! For local testing with DynamoDB Local, you can use dummy values and set:
+//!
+//! ```
+//! AWS_ENDPOINT_URL=http://localhost:8000
+//! ```
+//!
+//! ## Test Table
+//!
+//! The tests use a table named "test-products" with the following structure:
+//! - Partition key: "category" (String)
+//! - Sort key: "product_name" (String)
+//! - Additional attribute: "price" (Number)
+//!
+//! The table is created at the start of relevant tests if it doesn't exist.
+//!
+//! # Running Tests
+//!
+//! To run these tests, use:
+//!
+//! ```
+//! cargo test --test integration
+//! ```
+//!
+//! Note: These tests may incur AWS charges if run against a real DynamoDB instance.
+
 use crate::dynamodb::{DynamoDb, FieldType, Item, Schema, Table};
 use anyhow::Result;
 use aws_sdk_dynamodb::types::AttributeValue;
