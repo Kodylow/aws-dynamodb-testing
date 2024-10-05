@@ -1,12 +1,16 @@
 mod dynamodb;
 mod logging;
 
+use std::collections::HashMap;
+
 use anyhow::Result;
+use aws_sdk_dynamodb::types::AttributeValue;
 use tracing::info;
 
 const TABLE_NAME: &str = "testing-products";
-const PARTITION_KEY: &str = "category";
-const SORT_KEY: &str = "product_name";
+const CATEGORY_PARTITION_KEY: &str = "category";
+const PRODUCT_NAME_SORT_KEY: &str = "product_name";
+const PRICE_ATTRIBUTE: &str = "price";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -17,22 +21,36 @@ async fn main() -> Result<()> {
 
     let ddb = dynamodb::DynamoDbApp::new(&sdk_config);
 
-    ddb.check_authentication().await?;
+    ddb.check_auth().await?;
 
-    match ddb
-        .create_table_if_not_exists(TABLE_NAME, PARTITION_KEY, Some(SORT_KEY))
-        .await
-    {
-        Ok(table) => {
-            if let Some(description) = table.table_description() {
-                info!("Table status: {:?}", description.table_status());
-                info!("Table name: {:?}", description.table_name());
-            } else {
-                info!("Table created, but description is not available");
-            }
-        }
-        Err(e) => info!("Error creating table: {}", e),
-    }
+    ddb.create_table_if_not_exists(
+        TABLE_NAME,
+        CATEGORY_PARTITION_KEY,
+        Some(PRODUCT_NAME_SORT_KEY),
+    )
+    .await?;
+
+    let put_item_result = ddb
+        .put_item(
+            TABLE_NAME,
+            HashMap::from([
+                (
+                    CATEGORY_PARTITION_KEY.to_string(),
+                    AttributeValue::S("living-room".to_string()),
+                ),
+                (
+                    PRODUCT_NAME_SORT_KEY.to_string(),
+                    AttributeValue::S("couch".to_string()),
+                ),
+                (
+                    PRICE_ATTRIBUTE.to_string(),
+                    AttributeValue::N("375.0".to_string()),
+                ),
+            ]),
+        )
+        .await?;
+
+    info!("Put item result: {:?}", put_item_result);
 
     Ok(())
 }
