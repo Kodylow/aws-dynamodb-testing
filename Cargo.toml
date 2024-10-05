@@ -9,3 +9,7 @@ aws-sdk-dynamodb = { version = "1.47.0", features = [
   "behavior-version-latest",
 ] }
 aws-config = { version = "1.5.6", features = ["behavior-version-latest"] }
+anyhow = "1.0.89"
+dotenv = "0.15.0"
+tracing = "0.1.40"
+tracing-subscriber = "0.3.18"
