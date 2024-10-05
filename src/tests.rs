@@ -1,10 +1,7 @@
-use crate::{
-    dynamodb::{DynamoDb, FieldType, Item, Schema, Table},
-    utils::retry_with_backoff,
-};
+use crate::dynamodb::{DynamoDb, FieldType, Item, Schema, Table};
 use anyhow::Result;
 use aws_sdk_dynamodb::types::AttributeValue;
-use tokio::time::{sleep, Duration};
+use tokio::time::Duration;
 use tracing::{info, instrument};
 
 const TEST_TABLE_NAME: &str = "test-products";
@@ -27,7 +24,7 @@ async fn setup_test_table(ddb: &DynamoDb) -> Result<Table<'static>> {
     );
 
     if !ddb.table_exists(TEST_TABLE_NAME).await? {
-        retry_with_backoff(
+        crate::utils::retry_with_backoff(
             || ddb.create_table_if_not_exists(&table),
             Duration::from_secs(3),
             5,

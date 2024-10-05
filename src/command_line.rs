@@ -1,6 +1,7 @@
 use crate::dynamodb::{DynamoDb, FieldType, Item, Table};
 use anyhow::{anyhow, Result};
 use aws_sdk_dynamodb::types::AttributeValue;
+use std::collections::HashMap;
 use std::io::{self, Write};
 use tracing::info;
 
@@ -14,6 +15,7 @@ use tracing::info;
 /// - update: Update an existing item in the table
 /// - delete: Delete an item from the table
 /// - query: Query items from the table
+/// - scan: Scan items from the table
 /// - list: List all items in the table
 /// - exit: Exit the program
 ///
@@ -27,7 +29,7 @@ use tracing::info;
 /// Returns `Ok(())` if the function completes successfully, or an error if any operation fails.
 pub async fn run(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     loop {
-        let command = prompt("Enter command (info/put/get/update/delete/query/list/exit): ")?;
+        let command = prompt("Enter command (info/put/get/update/delete/query/scan/list/exit): ")?;
         match command.as_str() {
             "info" => print_info(ddb, table).await?,
             "put" => put_item(ddb, table).await?,
@@ -35,6 +37,7 @@ pub async fn run(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
             "update" => update_item(ddb, table).await?,
             "delete" => delete_item(ddb, table).await?,
             "query" => query_items(ddb, table).await?,
+            "scan" => scan_items(ddb, table).await?,
             "list" => list_items(ddb, table).await?,
             "exit" => break,
             _ => println!("Unknown command. Please try again."),
@@ -198,8 +201,8 @@ async fn delete_item(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
 
 /// Queries items from the DynamoDB table.
 ///
-/// This function prompts the user to enter a partition key value and optionally a sort key condition.
-/// It then performs a query operation on the table and displays the results.
+/// This function prompts the user to enter a key condition expression and attribute values,
+/// then performs a query operation on the table and displays the results.
 ///
 /// # Arguments
 ///
@@ -210,32 +213,119 @@ async fn delete_item(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
 ///
 /// Returns `Ok(())` if the query completes successfully, or an error if the operation fails.
 async fn query_items(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
-    let partition_key_value = prompt(&format!("Enter {} value: ", table.partition_key()))?;
-    let partition_key = (
-        table.partition_key(),
-        AttributeValue::S(partition_key_value),
-    );
+    let key_condition_expression = prompt("Enter key condition expression: ")?;
+    let mut expression_attribute_names = HashMap::new();
+    let mut expression_attribute_values = HashMap::new();
 
-    let sort_key_condition = if let Some(sort_key) = table.sort_key() {
-        let condition = prompt("Enter sort key condition (e.g., '= 123', '> 100', '< 200'): ")?;
-        let (operator, value) = condition
-            .split_once(' ')
-            .ok_or_else(|| anyhow!("Invalid condition format"))?;
-        Some((
-            sort_key,
-            operator.to_string(),
-            AttributeValue::S(value.to_string()),
-        ))
-    } else {
-        None
-    };
+    loop {
+        let name = prompt("Enter attribute name (or press Enter to finish): ")?;
+        if name.is_empty() {
+            break;
+        }
+        let placeholder = prompt("Enter attribute name placeholder: ")?;
+        expression_attribute_names.insert(placeholder, name);
+    }
+
+    loop {
+        let value_placeholder = prompt("Enter value placeholder (or press Enter to finish): ")?;
+        if value_placeholder.is_empty() {
+            break;
+        }
+        let value_type = prompt("Enter value type (S for string, N for number): ")?;
+        let value = prompt("Enter value: ")?;
+        let attribute_value = match value_type.as_str() {
+            "S" => AttributeValue::S(value),
+            "N" => AttributeValue::N(value),
+            _ => return Err(anyhow!("Unsupported value type")),
+        };
+        expression_attribute_values.insert(value_placeholder, attribute_value);
+    }
 
     let items = ddb
-        .query_items(table.name(), partition_key, sort_key_condition)
+        .query(
+            table.name(),
+            &key_condition_expression,
+            expression_attribute_names,
+            expression_attribute_values,
+        )
         .await?;
+
     println!("\n--- Query Results ---");
     items.iter().for_each(|item| println!("{:?}", item));
     println!("---------------------\n");
+    Ok(())
+}
+
+/// Scans items from the DynamoDB table.
+///
+/// This function prompts the user to enter an optional filter expression and attribute values,
+/// then performs a scan operation on the table and displays the results.
+///
+/// # Arguments
+///
+/// * `ddb` - A reference to the DynamoDB client
+/// * `table` - A reference to the Table struct containing table information
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the scan completes successfully, or an error if the operation fails.
+async fn scan_items(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
+    let filter_expression = prompt("Enter filter expression (or press Enter for no filter): ")?;
+    let filter_expression = if filter_expression.is_empty() {
+        None
+    } else {
+        Some(filter_expression)
+    };
+
+    let mut expression_attribute_names = HashMap::new();
+    let mut expression_attribute_values = HashMap::new();
+
+    if filter_expression.is_some() {
+        loop {
+            let name = prompt("Enter attribute name (or press Enter to finish): ")?;
+            if name.is_empty() {
+                break;
+            }
+            let placeholder = prompt("Enter attribute name placeholder: ")?;
+            expression_attribute_names.insert(placeholder, name);
+        }
+
+        loop {
+            let value_placeholder = prompt("Enter value placeholder (or press Enter to finish): ")?;
+            if value_placeholder.is_empty() {
+                break;
+            }
+            let value_type = prompt("Enter value type (S for string, N for number): ")?;
+            let value = prompt("Enter value: ")?;
+            let attribute_value = match value_type.as_str() {
+                "S" => AttributeValue::S(value),
+                "N" => AttributeValue::N(value),
+                _ => return Err(anyhow!("Unsupported value type")),
+            };
+            expression_attribute_values.insert(value_placeholder, attribute_value);
+        }
+    }
+
+    let items = ddb
+        .scan(
+            table.name(),
+            filter_expression,
+            if expression_attribute_names.is_empty() {
+                None
+            } else {
+                Some(expression_attribute_names)
+            },
+            if expression_attribute_values.is_empty() {
+                None
+            } else {
+                Some(expression_attribute_values)
+            },
+        )
+        .await?;
+
+    println!("\n--- Scan Results ---");
+    items.iter().for_each(|item| println!("{:?}", item));
+    println!("--------------------\n");
     Ok(())
 }
 
