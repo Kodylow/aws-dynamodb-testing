@@ -69,7 +69,7 @@ mod item;
 mod schema;
 mod table;
 
-pub use client::DynamoDb;
+pub use client::{DynamoDb, QueryFlexibleParams};
 pub use item::Item;
 pub use schema::{FieldType, Schema};
 pub use table::Table;

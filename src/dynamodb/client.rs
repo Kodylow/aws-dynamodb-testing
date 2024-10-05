@@ -264,67 +264,6 @@ impl DynamoDb {
 
     // --- Query and Scan Operations ---
 
-    /// Queries items from a DynamoDB table.
-    pub async fn query_items(
-        &self,
-        table_name: &str,
-        partition_key: (&str, AttributeValue),
-        sort_key_condition: Option<(&str, String, AttributeValue)>,
-    ) -> Result<Vec<Item>> {
-        let mut query = self
-            .client
-            .query()
-            .table_name(table_name)
-            .key_condition_expression("#pk = :pkval")
-            .expression_attribute_names("#pk", partition_key.0)
-            .expression_attribute_values(":pkval", partition_key.1);
-
-        if let Some((sort_key, condition, value)) = sort_key_condition {
-            query = query
-                .key_condition_expression(format!(
-                    "#pk = :pkval AND {} {} :skval",
-                    sort_key, condition
-                ))
-                .expression_attribute_names("#sk", sort_key)
-                .expression_attribute_values(":skval", value);
-        }
-
-        let response = query.send().await?;
-
-        Ok(response
-            .items
-            .unwrap_or_default()
-            .into_iter()
-            .map(|attrs| Item { attributes: attrs })
-            .collect())
-    }
-
-    /// Performs a query operation on a DynamoDB table.
-    pub async fn query(
-        &self,
-        table_name: &str,
-        key_condition_expression: &str,
-        expression_attribute_names: HashMap<String, String>,
-        expression_attribute_values: HashMap<String, AttributeValue>,
-    ) -> Result<Vec<Item>> {
-        let response = self
-            .client
-            .query()
-            .table_name(table_name)
-            .key_condition_expression(key_condition_expression)
-            .set_expression_attribute_names(Some(expression_attribute_names))
-            .set_expression_attribute_values(Some(expression_attribute_values))
-            .send()
-            .await?;
-
-        Ok(response
-            .items
-            .unwrap_or_default()
-            .into_iter()
-            .map(|attrs| Item { attributes: attrs })
-            .collect())
-    }
-
     /// Scans a table for items.
     pub async fn scan_table(
         &self,
@@ -450,43 +389,33 @@ impl DynamoDb {
     ///     Some("user_index")
     /// ).await?;
     /// ```
-    pub async fn query_flexible(
-        &self,
-        table_name: &str,
-        key_condition_expression: &str,
-        filter_expression: Option<&str>,
-        projection_expression: Option<&str>,
-        expression_attribute_names: Option<HashMap<String, String>>,
-        expression_attribute_values: Option<HashMap<String, AttributeValue>>,
-        limit: Option<i32>,
-        scan_index_forward: Option<bool>,
-        index_name: Option<&str>,
-    ) -> Result<Vec<Item>> {
+
+    pub async fn query_flexible(&self, params: QueryFlexibleParams<'_>) -> Result<Vec<Item>> {
         let mut query = self
             .client
             .query()
-            .table_name(table_name)
-            .key_condition_expression(key_condition_expression)
-            .set_expression_attribute_names(expression_attribute_names)
-            .set_expression_attribute_values(expression_attribute_values);
+            .table_name(params.table_name)
+            .key_condition_expression(params.key_condition_expression)
+            .set_expression_attribute_names(params.expression_attribute_names)
+            .set_expression_attribute_values(params.expression_attribute_values);
 
-        if let Some(filter) = filter_expression {
+        if let Some(filter) = params.filter_expression {
             query = query.filter_expression(filter);
         }
 
-        if let Some(projection) = projection_expression {
+        if let Some(projection) = params.projection_expression {
             query = query.projection_expression(projection);
         }
 
-        if let Some(limit_val) = limit {
+        if let Some(limit_val) = params.limit {
             query = query.limit(limit_val);
         }
 
-        if let Some(forward) = scan_index_forward {
+        if let Some(forward) = params.scan_index_forward {
             query = query.scan_index_forward(forward);
         }
 
-        if let Some(index) = index_name {
+        if let Some(index) = params.index_name {
             query = query.index_name(index);
         }
 
@@ -549,17 +478,18 @@ impl DynamoDb {
             expression_attribute_values.insert(":skval".to_string(), value);
         }
 
-        self.query_flexible(
+        self.query_flexible(QueryFlexibleParams {
             table_name,
-            &key_condition_expression,
+            key_condition_expression: &key_condition_expression,
+            expression_attribute_names: Some(expression_attribute_names),
+            expression_attribute_values: Some(expression_attribute_values),
             filter_expression,
-            None,
-            Some(expression_attribute_names),
-            Some(expression_attribute_values),
+            projection_expression: None,
             limit,
-            None,
-            None,
-        )
+            scan_index_forward: None,
+            exclusive_start_key: None,
+            index_name: None,
+        })
         .await
     }
 
@@ -606,7 +536,7 @@ impl DynamoDb {
         limit: Option<i32>,
         exclusive_start_key: Option<HashMap<String, AttributeValue>>,
     ) -> Result<(Vec<Item>, Option<HashMap<String, AttributeValue>>)> {
-        let mut scan = self
+        let scan = self
             .client
             .scan()
             .table_name(table_name)
@@ -628,4 +558,17 @@ impl DynamoDb {
 
         Ok((items, response.last_evaluated_key))
     }
+}
+
+pub struct QueryFlexibleParams<'a> {
+    pub table_name: &'a str,
+    pub key_condition_expression: &'a str,
+    pub expression_attribute_names: Option<HashMap<String, String>>,
+    pub expression_attribute_values: Option<HashMap<String, AttributeValue>>,
+    pub filter_expression: Option<&'a str>,
+    pub projection_expression: Option<&'a str>,
+    pub limit: Option<i32>,
+    pub scan_index_forward: Option<bool>,
+    pub exclusive_start_key: Option<HashMap<String, AttributeValue>>,
+    pub index_name: Option<&'a str>,
 }

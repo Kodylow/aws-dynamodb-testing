@@ -1,4 +1,4 @@
-use crate::dynamodb::{DynamoDb, FieldType, Item, Table};
+use crate::dynamodb::{DynamoDb, FieldType, Item, QueryFlexibleParams, Table};
 use anyhow::{anyhow, Result};
 use aws_sdk_dynamodb::types::AttributeValue;
 use std::collections::HashMap;
@@ -20,6 +20,7 @@ use tracing::info;
 /// - query_flexible: Perform a flexible query operation with full control over all query parameters
 /// - query_simple: Provide a simplified interface for common query operations
 /// - scan_paginated: Enable users to perform a paginated scan operation on the table
+/// - delete_table: Delete the DynamoDB table
 /// - exit: Exit the program
 ///
 /// # Arguments
@@ -32,7 +33,7 @@ use tracing::info;
 /// Returns `Ok(())` if the function completes successfully, or an error if any operation fails.
 pub async fn run(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     loop {
-        let command = prompt("Enter command (info/put/get/update/delete/query/scan/list/query_flexible/query_simple/scan_paginated/exit): ", None)?;
+        let command = prompt("Enter command (info/put/get/update/delete/query/scan/list/query_flexible/query_simple/scan_paginated/delete_table/exit): ", None)?;
         match command.as_str() {
             "info" => print_info(ddb, table).await?,
             "put" => put_item(ddb, table).await?,
@@ -45,6 +46,7 @@ pub async fn run(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
             "query_flexible" => query_flexible_items(ddb, table).await?,
             "query_simple" => query_simple_items(ddb, table).await?,
             "scan_paginated" => scan_paginated_items(ddb, table).await?,
+            "delete_table" => delete_table(ddb, table).await?,
             "exit" => break,
             _ => println!("Unknown command. Please try again."),
         }
@@ -78,7 +80,9 @@ async fn print_info(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     println!("\n--- Table Information ---");
     println!("Table Name: {}", table.name());
     println!("Partition Key: {}", table.partition_key());
-    table.sort_key().map(|key| println!("Sort Key: {}", key));
+    if let Some(key) = table.sort_key() {
+        println!("Sort Key: {}", key);
+    }
 
     if let Some(schema) = table.schema() {
         println!("Schema:");
@@ -207,8 +211,7 @@ async fn delete_item(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
 
 /// Queries items from the DynamoDB table.
 ///
-/// This function prompts the user to enter a key condition expression and attribute values,
-/// then performs a query operation on the table and displays the results.
+/// This function prompts the user to enter query parameters and performs a query operation.
 ///
 /// # Arguments
 ///
@@ -219,21 +222,67 @@ async fn delete_item(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
 ///
 /// Returns `Ok(())` if the query completes successfully, or an error if the operation fails.
 async fn query_items(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
-    let key_condition_expression = prompt(
-        "Enter key condition expression (e.g., 'partitionKey = :pk'): ",
-        None,
-    )?;
-    let expression_attribute_names = get_expression_attribute_names()?;
-    let expression_attribute_values = get_expression_attribute_values()?;
+    let partition_key_name = table.partition_key();
+    let partition_key_value = prompt(&format!("Enter {} value: ", partition_key_name), None)?;
 
-    let items = ddb
-        .query(
-            table.name(),
-            &key_condition_expression,
-            expression_attribute_names,
-            expression_attribute_values,
-        )
-        .await?;
+    let mut key_condition_expression = "#pk = :pkval".to_string();
+    let mut expression_attribute_names =
+        HashMap::from([("#pk".to_string(), partition_key_name.to_string())]);
+    let mut expression_attribute_values =
+        HashMap::from([(":pkval".to_string(), AttributeValue::S(partition_key_value))]);
+
+    if let Some(sort_key) = table.sort_key() {
+        let sort_key_condition = prompt(
+            &format!(
+                "Enter condition for {} (e.g., '=', '>', '<', 'BETWEEN'): ",
+                sort_key
+            ),
+            None,
+        )?;
+        let sort_key_value = prompt(&format!("Enter value for {}: ", sort_key), None)?;
+
+        key_condition_expression.push_str(&format!(" AND #sk {} :skval", sort_key_condition));
+        expression_attribute_names.insert("#sk".to_string(), sort_key.to_string());
+        expression_attribute_values.insert(":skval".to_string(), AttributeValue::S(sort_key_value));
+
+        if sort_key_condition == "BETWEEN" {
+            let sort_key_value_2 = prompt(
+                &format!(
+                    "Enter second value for {} (for BETWEEN condition): ",
+                    sort_key
+                ),
+                None,
+            )?;
+            key_condition_expression.push_str(" AND :skval2");
+            expression_attribute_values
+                .insert(":skval2".to_string(), AttributeValue::S(sort_key_value_2));
+        }
+    }
+
+    let filter_expression = prompt_optional("Enter filter expression (optional): ", None)?;
+    if filter_expression.is_some() {
+        let filter_attribute_names = get_expression_attribute_names()?;
+        let filter_attribute_values = get_expression_attribute_values()?;
+        expression_attribute_names.extend(filter_attribute_names);
+        expression_attribute_values.extend(filter_attribute_values);
+    }
+
+    let limit = prompt_optional("Enter limit (optional): ", None)?.and_then(|s| s.parse().ok());
+
+    let params = QueryFlexibleParams {
+        table_name: table.name(),
+        key_condition_expression: &key_condition_expression,
+        expression_attribute_names: Some(expression_attribute_names),
+        expression_attribute_values: Some(expression_attribute_values),
+        filter_expression: filter_expression.as_deref(),
+        projection_expression: None,
+        limit,
+        scan_index_forward: None,
+        exclusive_start_key: None,
+        index_name: None,
+    };
+
+    let items = ddb.query_flexible(params).await?;
 
     print_items(
         "Query Results",
@@ -338,14 +387,15 @@ fn create_update_item(table: &Table<'_>) -> Result<Item> {
         let is_not_sort_key = table
             .sort_key()
             .map_or(true, |sort_key| field_name != sort_key);
-        if is_not_partition_key && is_not_sort_key {
-            if prompt(&format!("Update {}? (y/n): ", field_name), None)?.to_lowercase() == "y" {
-                let value = prompt(&format!("Enter new value for {}: ", field_name), None)?;
-                updates = match field_type {
-                    FieldType::String => updates.set_string(field_name, value),
-                    FieldType::Number => updates.set_number(field_name, value.parse::<f64>()?),
-                };
-            }
+        if is_not_partition_key
+            && is_not_sort_key
+            && prompt(&format!("Update {}? (y/n): ", field_name), None)?.to_lowercase() == "y"
+        {
+            let value = prompt(&format!("Enter new value for {}: ", field_name), None)?;
+            updates = match field_type {
+                FieldType::String => updates.set_string(field_name, value),
+                FieldType::Number => updates.set_number(field_name, value.parse::<f64>()?),
+            };
         }
     }
     Ok(updates)
@@ -450,19 +500,20 @@ async fn query_flexible_items(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
 
     let index_name = prompt_optional("Enter index name", Some("GSI1"))?;
 
-    let items = ddb
-        .query_flexible(
-            table.name(),
-            &key_condition_expression,
-            filter_expression.as_deref(),
-            projection_expression.as_deref(),
-            Some(expression_attribute_names),
-            Some(expression_attribute_values),
-            limit,
-            Some(scan_index_forward),
-            index_name.as_deref(),
-        )
-        .await?;
+    let params = QueryFlexibleParams {
+        table_name: table.name(),
+        key_condition_expression: &key_condition_expression,
+        expression_attribute_names: Some(expression_attribute_names),
+        expression_attribute_values: Some(expression_attribute_values),
+        filter_expression: filter_expression.as_deref(),
+        projection_expression: projection_expression.as_deref(),
+        limit,
+        scan_index_forward: Some(scan_index_forward),
+        index_name: index_name.as_deref(),
+        exclusive_start_key: None,
+    };
+
+    let items = ddb.query_flexible(params).await?;
 
     print_items(
         "Query Flexible Results",
@@ -609,4 +660,35 @@ fn prompt_bool(message: &str, default: bool) -> Result<bool> {
         Some(if default { "y" } else { "n" }),
     )?;
     Ok(input.to_lowercase().starts_with('y') || (input.is_empty() && default))
+}
+
+/// Deletes the DynamoDB table.
+///
+/// This function prompts the user for confirmation before deleting the table.
+///
+/// # Arguments
+///
+/// * `ddb` - A reference to the DynamoDB client
+/// * `table` - A reference to the Table struct containing table information
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the table is deleted successfully, or an error if the operation fails.
+async fn delete_table(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
+    let confirmation = prompt(
+        &format!(
+            "Are you sure you want to delete the table '{}'? This action cannot be undone. (y/n): ",
+            table.name()
+        ),
+        None,
+    )?;
+
+    if confirmation.to_lowercase() == "y" {
+        ddb.delete_table(table.name()).await?;
+        println!("Table '{}' has been deleted.", table.name());
+    } else {
+        println!("Table deletion cancelled.");
+    }
+
+    Ok(())
 }

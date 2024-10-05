@@ -288,7 +288,14 @@ mod tests {
                 AttributeValue::S("Electronics".to_string()),
             );
             let items = ddb
-                .query_items(TEST_TABLE_NAME, partition_key.clone(), None)
+                .query_simple(
+                    TEST_TABLE_NAME,
+                    partition_key.clone(),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
                 .await?;
             assert_eq!(items.len(), 5);
 

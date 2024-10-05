@@ -71,6 +71,7 @@ impl Item {
     /// Gets the value of an attribute as a string.
     ///
     /// Returns `None` if the attribute doesn't exist or is not a string.
+    #[allow(dead_code)]
     pub fn get_string(&self, key: &str) -> Option<&String> {
         self.attributes.get(key).and_then(|av| av.as_s().ok())
     }
@@ -78,6 +79,7 @@ impl Item {
     /// Gets the value of an attribute as a number (f64).
     ///
     /// Returns `None` if the attribute doesn't exist, is not a number, or can't be parsed as f64.
+    #[allow(dead_code)]
     pub fn get_number(&self, key: &str) -> Option<f64> {
         self.attributes
             .get(key)
