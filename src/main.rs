@@ -31,9 +31,9 @@ async fn main() -> Result<()> {
         .put_item(
             TABLE_NAME,
             Item::new()
-                .string(CATEGORY_PARTITION_KEY, "living-room")
-                .string(PRODUCT_NAME_SORT_KEY, "couch")
-                .number(PRICE_ATTRIBUTE, 375.0),
+                .set_string(CATEGORY_PARTITION_KEY, "living-room")
+                .set_string(PRODUCT_NAME_SORT_KEY, "couch")
+                .set_number(PRICE_ATTRIBUTE, "375.0"),
         )
         .await?;
 

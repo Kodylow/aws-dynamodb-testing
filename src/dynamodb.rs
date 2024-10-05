@@ -14,19 +14,19 @@ pub struct DynamoDb {
     client: Client,
 }
 
-#[derive(Debug)]
-pub struct Table<'a> {
-    name: &'a str,
-    partition_key: &'a str,
-    sort_key: Option<&'a str>,
+#[derive(Debug, Clone)]
+pub struct Table {
+    name: String,
+    partition_key: String,
+    sort_key: Option<String>,
 }
 
-impl<'a> Table<'a> {
-    pub fn new(name: &'a str, partition_key: &'a str, sort_key: Option<&'a str>) -> Self {
+impl Table {
+    pub fn new<S: Into<String>>(name: S, partition_key: S, sort_key: Option<S>) -> Self {
         Self {
-            name,
-            partition_key,
-            sort_key,
+            name: name.into(),
+            partition_key: partition_key.into(),
+            sort_key: sort_key.map(Into::into),
         }
     }
 }
@@ -47,23 +47,23 @@ impl DynamoDb {
         Ok(())
     }
 
-    pub async fn create_table_if_not_exists(&self, table: &Table<'_>) -> Result<CreateTableOutput> {
-        if self.table_exists(table.name).await? {
+    pub async fn create_table_if_not_exists(&self, table: &Table) -> Result<CreateTableOutput> {
+        if self.table_exists(&table.name).await? {
             info!("Table '{}' already exists", table.name);
-            return self.describe_table(table.name).await;
+            return self.describe_table(&table.name).await;
         }
 
         let mut attribute_definitions = vec![AttributeDefinition::builder()
-            .attribute_name(table.partition_key)
+            .attribute_name(&table.partition_key)
             .attribute_type(ScalarAttributeType::S)
             .build()?];
 
         let mut key_schema = vec![KeySchemaElement::builder()
-            .attribute_name(table.partition_key)
+            .attribute_name(&table.partition_key)
             .key_type(KeyType::Hash)
             .build()?];
 
-        if let Some(sort_key) = table.sort_key {
+        if let Some(sort_key) = &table.sort_key {
             attribute_definitions.push(
                 AttributeDefinition::builder()
                     .attribute_name(sort_key)
@@ -80,7 +80,7 @@ impl DynamoDb {
 
         self.client
             .create_table()
-            .table_name(table.name)
+            .table_name(&table.name)
             .billing_mode(BillingMode::PayPerRequest)
             .set_attribute_definitions(Some(attribute_definitions))
             .set_key_schema(Some(key_schema))
@@ -89,28 +89,30 @@ impl DynamoDb {
             .map_err(Into::into)
     }
 
-    pub async fn put_item(&self, table_name: &str, item: Item) -> Result<()> {
+    pub async fn put_item<S: AsRef<str>>(&self, table_name: S, item: Item) -> Result<()> {
         self.client
             .put_item()
-            .table_name(table_name)
-            .set_item(Some(item.attributes))
+            .table_name(table_name.as_ref())
+            .set_item(Some(item.into_attributes()))
             .send()
             .await?;
 
-        info!("Item successfully put into table '{table_name}'");
+        info!("Item successfully put into table '{}'", table_name.as_ref());
         Ok(())
     }
 
-    async fn table_exists(&self, table_name: &str) -> Result<bool> {
+    async fn table_exists<S: AsRef<str>>(&self, table_name: S) -> Result<bool> {
         let tables = self.client.list_tables().send().await?;
-        Ok(tables.table_names().contains(&table_name.to_string()))
+        Ok(tables
+            .table_names()
+            .contains(&table_name.as_ref().to_string()))
     }
 
-    async fn describe_table(&self, table_name: &str) -> Result<CreateTableOutput> {
+    async fn describe_table<S: AsRef<str>>(&self, table_name: S) -> Result<CreateTableOutput> {
         let describe_table_output = self
             .client
             .describe_table()
-            .table_name(table_name)
+            .table_name(table_name.as_ref())
             .send()
             .await?;
 
@@ -127,20 +129,35 @@ pub struct Item {
 
 impl Item {
     pub fn new() -> Self {
-        Self::default()
+        Item {
+            attributes: HashMap::new(),
+        }
     }
 
-    pub fn string(mut self, key: &str, value: &str) -> Self {
+    pub fn set_string<K: Into<String>, V: Into<String>>(mut self, key: K, value: V) -> Self {
         self.attributes
-            .insert(key.to_string(), AttributeValue::S(value.to_string()));
+            .insert(key.into(), AttributeValue::S(value.into()));
         self
     }
 
-    pub fn number(mut self, key: &str, value: f64) -> Self {
+    pub fn set_number<K: Into<String>, V: Into<String>>(mut self, key: K, value: V) -> Self {
         self.attributes
-            .insert(key.to_string(), AttributeValue::N(value.to_string()));
+            .insert(key.into(), AttributeValue::N(value.into()));
         self
     }
 
-    // Add more methods for other attribute types as needed
+    // pub fn set_bool(mut self, key: impl Into<String>, value: bool) -> Self {
+    //     self.attributes
+    //         .insert(key.into(), AttributeValue::Bool(value));
+    //     self
+    // }
+
+    // pub fn set_list(mut self, key: impl Into<String>, value: Vec<AttributeValue>) -> Self {
+    //     self.attributes.insert(key.into(), AttributeValue::L(value));
+    //     self
+    // }
+
+    pub fn into_attributes(self) -> HashMap<String, AttributeValue> {
+        self.attributes
+    }
 }
