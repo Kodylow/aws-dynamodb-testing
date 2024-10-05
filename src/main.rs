@@ -27,15 +27,12 @@ async fn main() -> Result<()> {
     ))
     .await?;
 
-    let put_item_result = ddb
-        .put_item(
-            TABLE_NAME,
-            Item::new()
-                .set_string(CATEGORY_PARTITION_KEY, "living-room")
-                .set_string(PRODUCT_NAME_SORT_KEY, "couch")
-                .set_number(PRICE_ATTRIBUTE, 375.0),
-        )
-        .await?;
+    let item = Item::new()
+        .set_string(CATEGORY_PARTITION_KEY, "living-room")
+        .set_string(PRODUCT_NAME_SORT_KEY, "couch")
+        .set_number(PRICE_ATTRIBUTE, 375.0);
+
+    let put_item_result = ddb.put_item(TABLE_NAME, item).await?;
 
     info!("Put item result: {:?}", put_item_result);
 
