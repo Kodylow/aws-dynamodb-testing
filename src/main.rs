@@ -1,6 +1,10 @@
 mod command_line;
 mod dynamodb;
 mod logging;
+#[cfg(test)]
+mod tests;
+mod utils;
+
 use anyhow::Result;
 use dynamodb::{FieldType, Schema, Table};
 

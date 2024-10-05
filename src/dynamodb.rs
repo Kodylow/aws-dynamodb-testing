@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use tracing::{error, info};
 
 /// DynamoDB client wrapper for high-level operations.
+#[derive(Debug)]
 pub struct DynamoDb {
     client: Client,
 }
@@ -39,23 +40,28 @@ impl<'a> Table<'a> {
         }
     }
 
+    /// Returns the name of the table.
     pub fn name(&self) -> &str {
         self.name
     }
 
+    /// Returns the partition key of the table.
     pub fn partition_key(&self) -> &str {
         self.partition_key
     }
 
+    /// Returns the sort key of the table, if any.
     pub fn sort_key(&self) -> Option<&str> {
         self.sort_key
     }
 
+    /// Sets the schema for the table and returns the modified `Table`.
     pub fn with_schema(mut self, schema: Schema) -> Self {
         self.schema = Some(schema);
         self
     }
 
+    /// Returns a reference to the table's schema, if set.
     pub fn schema(&self) -> Option<&Schema> {
         self.schema.as_ref()
     }
@@ -80,6 +86,8 @@ impl DynamoDb {
     }
 
     /// Creates a table if it doesn't exist.
+    ///
+    /// Returns `Some(CreateTableOutput)` if a new table was created, or `None` if the table already exists.
     pub async fn create_table_if_not_exists(
         &self,
         table: &Table<'_>,
@@ -126,6 +134,17 @@ impl DynamoDb {
         Ok(Some(output))
     }
 
+    /// Deletes a table if it exists.
+    pub async fn delete_table(&self, table_name: &str) -> Result<()> {
+        self.client
+            .delete_table()
+            .table_name(table_name)
+            .send()
+            .await?;
+        info!("Table '{table_name}' deleted");
+        Ok(())
+    }
+
     /// Puts an item into a DynamoDB table.
     pub async fn put_item(&self, table_name: &str, item: Item) -> Result<()> {
         self.client
@@ -140,7 +159,7 @@ impl DynamoDb {
     }
 
     /// Checks if a table exists.
-    async fn table_exists(&self, table_name: &str) -> Result<bool> {
+    pub async fn table_exists(&self, table_name: &str) -> Result<bool> {
         let tables = self.client.list_tables().send().await?;
         Ok(tables.table_names().contains(&table_name.to_string()))
     }
@@ -159,6 +178,8 @@ impl DynamoDb {
     }
 
     /// Scans a table for items.
+    ///
+    /// Returns a vector of items, where each item is represented as a HashMap of attribute name-value pairs.
     pub async fn scan_table(
         &self,
         table_name: &str,
@@ -190,6 +211,8 @@ impl DynamoDb {
     }
 
     /// Gets an item from a DynamoDB table.
+    ///
+    /// Returns `Some(Item)` if the item is found, or `None` if it doesn't exist.
     pub async fn get_item(&self, table_name: &str, key: Item) -> Result<Option<Item>> {
         let response = self
             .client
@@ -249,6 +272,16 @@ impl DynamoDb {
     }
 
     /// Queries items from a DynamoDB table.
+    ///
+    /// # Arguments
+    ///
+    /// * `table_name` - The name of the table to query.
+    /// * `partition_key` - A tuple containing the partition key name and value.
+    /// * `sort_key_condition` - An optional tuple containing the sort key name, condition, and value.
+    ///
+    /// # Returns
+    ///
+    /// A vector of `Item`s matching the query conditions.
     pub async fn query_items(
         &self,
         table_name: &str,
@@ -324,30 +357,37 @@ impl Item {
     }
 }
 
+/// Represents the schema of a DynamoDB table.
 #[derive(Debug, Clone)]
 pub struct Schema {
     fields: HashMap<String, FieldType>,
 }
 
+/// Represents the type of a field in a DynamoDB table schema.
 #[derive(Debug, Clone)]
 pub enum FieldType {
+    /// Represents a string field.
     String,
+    /// Represents a number field.
     Number,
     // Add more types as needed
 }
 
 impl Schema {
+    /// Creates a new empty `Schema`.
     pub fn new() -> Self {
         Self {
             fields: HashMap::new(),
         }
     }
 
+    /// Adds a field to the schema and returns the modified `Schema`.
     pub fn add_field(mut self, name: impl Into<String>, field_type: FieldType) -> Self {
         self.fields.insert(name.into(), field_type);
         self
     }
 
+    /// Returns a reference to the fields in the schema.
     pub fn fields(&self) -> &HashMap<String, FieldType> {
         &self.fields
     }

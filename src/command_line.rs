@@ -4,6 +4,27 @@ use aws_sdk_dynamodb::types::AttributeValue;
 use std::io::{self, Write};
 use tracing::info;
 
+/// Runs the command-line interface for interacting with a DynamoDB table.
+///
+/// This function enters a loop that prompts the user for commands and executes them.
+/// The supported commands are:
+/// - info: Print table information
+/// - put: Add a new item to the table
+/// - get: Retrieve an item from the table
+/// - update: Update an existing item in the table
+/// - delete: Delete an item from the table
+/// - query: Query items from the table
+/// - list: List all items in the table
+/// - exit: Exit the program
+///
+/// # Arguments
+///
+/// * `ddb` - A reference to the DynamoDB client
+/// * `table` - A reference to the Table struct containing table information
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the function completes successfully, or an error if any operation fails.
 pub async fn run(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     loop {
         let command = prompt("Enter command (info/put/get/update/delete/query/list/exit): ")?;
@@ -22,6 +43,25 @@ pub async fn run(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     Ok(())
 }
 
+/// Prints detailed information about the DynamoDB table.
+///
+/// This function retrieves and displays the following information:
+/// - Table name
+/// - Partition key
+/// - Sort key (if present)
+/// - Schema (if defined)
+/// - Item count
+/// - Table size in bytes
+/// - Table status
+///
+/// # Arguments
+///
+/// * `ddb` - A reference to the DynamoDB client
+/// * `table` - A reference to the Table struct containing table information
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the function completes successfully, or an error if any operation fails.
 async fn print_info(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     let table_info = ddb.describe_table(table.name()).await?;
     let items = ddb.scan_table(table.name()).await?;
@@ -59,6 +99,19 @@ async fn print_info(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     Ok(())
 }
 
+/// Adds a new item to the DynamoDB table.
+///
+/// This function prompts the user to enter values for each field defined in the table's schema,
+/// creates a new Item, and adds it to the table.
+///
+/// # Arguments
+///
+/// * `ddb` - A reference to the DynamoDB client
+/// * `table` - A reference to the Table struct containing table information
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the item is added successfully, or an error if the operation fails.
 async fn put_item(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     let schema = table
         .schema()
@@ -79,6 +132,19 @@ async fn put_item(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     Ok(())
 }
 
+/// Retrieves an item from the DynamoDB table.
+///
+/// This function prompts the user to enter the key values for the item,
+/// retrieves the item from the table, and displays it if found.
+///
+/// # Arguments
+///
+/// * `ddb` - A reference to the DynamoDB client
+/// * `table` - A reference to the Table struct containing table information
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the operation completes successfully, or an error if it fails.
 async fn get_item(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     let key = create_key_item(table)?;
     match ddb.get_item(table.name(), key).await? {
@@ -88,6 +154,20 @@ async fn get_item(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     Ok(())
 }
 
+/// Updates an existing item in the DynamoDB table.
+///
+/// This function prompts the user to enter the key values for the item to update,
+/// then prompts for new values for each updateable field. It then sends an update
+/// request to DynamoDB with the new values.
+///
+/// # Arguments
+///
+/// * `ddb` - A reference to the DynamoDB client
+/// * `table` - A reference to the Table struct containing table information
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the item is updated successfully, or an error if the operation fails.
 async fn update_item(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     let key = create_key_item(table)?;
     let updates = create_update_item(table)?;
@@ -96,6 +176,19 @@ async fn update_item(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     Ok(())
 }
 
+/// Deletes an item from the DynamoDB table.
+///
+/// This function prompts the user to enter the key values for the item to delete,
+/// then sends a delete request to DynamoDB for that item.
+///
+/// # Arguments
+///
+/// * `ddb` - A reference to the DynamoDB client
+/// * `table` - A reference to the Table struct containing table information
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the item is deleted successfully, or an error if the operation fails.
 async fn delete_item(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     let key = create_key_item(table)?;
     ddb.delete_item(table.name(), key).await?;
@@ -103,6 +196,19 @@ async fn delete_item(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     Ok(())
 }
 
+/// Queries items from the DynamoDB table.
+///
+/// This function prompts the user to enter a partition key value and optionally a sort key condition.
+/// It then performs a query operation on the table and displays the results.
+///
+/// # Arguments
+///
+/// * `ddb` - A reference to the DynamoDB client
+/// * `table` - A reference to the Table struct containing table information
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the query completes successfully, or an error if the operation fails.
 async fn query_items(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     let partition_key_value = prompt(&format!("Enter {} value: ", table.partition_key()))?;
     let partition_key = (
@@ -133,6 +239,17 @@ async fn query_items(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     Ok(())
 }
 
+/// Creates an Item containing the key attributes for a DynamoDB operation.
+///
+/// This function prompts the user to enter values for the partition key and sort key (if present).
+///
+/// # Arguments
+///
+/// * `table` - A reference to the Table struct containing table information
+///
+/// # Returns
+///
+/// Returns a Result containing the created Item if successful, or an error if the operation fails.
 fn create_key_item(table: &Table<'_>) -> Result<Item> {
     let mut key = Item::new();
     key = key.set_string(
@@ -145,6 +262,17 @@ fn create_key_item(table: &Table<'_>) -> Result<Item> {
     Ok(key)
 }
 
+/// Creates an Item containing the attributes to update for a DynamoDB operation.
+///
+/// This function prompts the user to enter new values for each updateable field in the table schema.
+///
+/// # Arguments
+///
+/// * `table` - A reference to the Table struct containing table information
+///
+/// # Returns
+///
+/// Returns a Result containing the created Item if successful, or an error if the operation fails.
 fn create_update_item(table: &Table<'_>) -> Result<Item> {
     let schema = table
         .schema()
@@ -169,6 +297,18 @@ fn create_update_item(table: &Table<'_>) -> Result<Item> {
     Ok(updates)
 }
 
+/// Lists all items in the DynamoDB table.
+///
+/// This function retrieves all items from the table using a scan operation and displays them.
+///
+/// # Arguments
+///
+/// * `ddb` - A reference to the DynamoDB client
+/// * `table` - A reference to the Table struct containing table information
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the operation completes successfully, or an error if it fails.
 async fn list_items(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     let items = ddb.scan_table(table.name()).await?;
     println!("\n--- Items in {} ---", table.name());
@@ -177,6 +317,17 @@ async fn list_items(ddb: &DynamoDb, table: &Table<'_>) -> Result<()> {
     Ok(())
 }
 
+/// Prompts the user for input and returns the entered string.
+///
+/// This function displays a message to the user, waits for input, and returns the entered string.
+///
+/// # Arguments
+///
+/// * `message` - The message to display to the user
+///
+/// # Returns
+///
+/// Returns a Result containing the user's input as a String if successful, or an error if the operation fails.
 fn prompt(message: &str) -> Result<String> {
     print!("{}", message);
     io::stdout().flush()?;
