@@ -1,21 +1,37 @@
-use std::collections::HashMap;
-
 use anyhow::{anyhow, Result};
 use aws_sdk_dynamodb::{
-    operation::{create_table::CreateTableOutput, put_item::PutItemOutput},
+    operation::create_table::CreateTableOutput,
     types::{
         AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType,
         ScalarAttributeType,
     },
     Client,
 };
+use std::collections::HashMap;
 use tracing::{error, info};
 
-pub struct DynamoDbApp {
+pub struct DynamoDb {
     client: Client,
 }
 
-impl DynamoDbApp {
+#[derive(Debug)]
+pub struct Table<'a> {
+    name: &'a str,
+    partition_key: &'a str,
+    sort_key: Option<&'a str>,
+}
+
+impl<'a> Table<'a> {
+    pub fn new(name: &'a str, partition_key: &'a str, sort_key: Option<&'a str>) -> Self {
+        Self {
+            name,
+            partition_key,
+            sort_key,
+        }
+    }
+}
+
+impl DynamoDb {
     pub fn new(sdk_config: &aws_config::SdkConfig) -> Self {
         Self {
             client: Client::new(sdk_config),
@@ -27,63 +43,67 @@ impl DynamoDbApp {
             error!("Authentication failed. Error: {}", e);
             anyhow!("Authentication failed")
         })?;
-
         info!("Authentication successful. Credentials are valid.");
         Ok(())
     }
 
-    pub async fn create_table_if_not_exists(
-        &self,
-        table_name: &str,
-        partition_key: &str,
-        sort_key: Option<&str>,
-    ) -> Result<CreateTableOutput> {
-        if self.table_exists(table_name).await? {
-            info!("Table '{}' already exists", table_name);
-            return self.describe_table(table_name).await;
+    pub async fn create_table_if_not_exists(&self, table: &Table<'_>) -> Result<CreateTableOutput> {
+        if self.table_exists(table.name).await? {
+            info!("Table '{}' already exists", table.name);
+            return self.describe_table(table.name).await;
         }
 
-        let mut attribute_definitions = vec![build_attribute_definition(partition_key)?];
-        let mut key_schema = vec![build_key_schema_element(partition_key, KeyType::Hash)?];
+        let mut attribute_definitions = vec![AttributeDefinition::builder()
+            .attribute_name(table.partition_key)
+            .attribute_type(ScalarAttributeType::S)
+            .build()?];
 
-        if let Some(sort_key) = sort_key {
-            attribute_definitions.push(build_attribute_definition(sort_key)?);
-            key_schema.push(build_key_schema_element(sort_key, KeyType::Range)?);
+        let mut key_schema = vec![KeySchemaElement::builder()
+            .attribute_name(table.partition_key)
+            .key_type(KeyType::Hash)
+            .build()?];
+
+        if let Some(sort_key) = table.sort_key {
+            attribute_definitions.push(
+                AttributeDefinition::builder()
+                    .attribute_name(sort_key)
+                    .attribute_type(ScalarAttributeType::S)
+                    .build()?,
+            );
+            key_schema.push(
+                KeySchemaElement::builder()
+                    .attribute_name(sort_key)
+                    .key_type(KeyType::Range)
+                    .build()?,
+            );
         }
 
-        let create_table_output = self
-            .client
+        self.client
             .create_table()
-            .table_name(table_name)
+            .table_name(table.name)
             .billing_mode(BillingMode::PayPerRequest)
             .set_attribute_definitions(Some(attribute_definitions))
             .set_key_schema(Some(key_schema))
             .send()
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn put_item(&self, table_name: &str, item: Item) -> Result<()> {
+        self.client
+            .put_item()
+            .table_name(table_name)
+            .set_item(Some(item.attributes))
+            .send()
             .await?;
 
-        Ok(create_table_output)
+        info!("Item successfully put into table '{table_name}'");
+        Ok(())
     }
 
     async fn table_exists(&self, table_name: &str) -> Result<bool> {
         let tables = self.client.list_tables().send().await?;
         Ok(tables.table_names().contains(&table_name.to_string()))
-    }
-
-    pub async fn put_item(
-        &self,
-        table_name: &str,
-        item: HashMap<String, AttributeValue>,
-    ) -> Result<PutItemOutput> {
-        let put_item_output = self
-            .client
-            .put_item()
-            .table_name(table_name)
-            .set_item(Some(item.clone()))
-            .send()
-            .await?;
-
-        info!("Item {:?} successfully put into table '{table_name}'", item);
-        Ok(put_item_output)
     }
 
     async fn describe_table(&self, table_name: &str) -> Result<CreateTableOutput> {
@@ -100,16 +120,27 @@ impl DynamoDbApp {
     }
 }
 
-fn build_attribute_definition(key: &str) -> Result<AttributeDefinition> {
-    Ok(AttributeDefinition::builder()
-        .attribute_name(key)
-        .attribute_type(ScalarAttributeType::S)
-        .build()?)
+#[derive(Default)]
+pub struct Item {
+    attributes: HashMap<String, AttributeValue>,
 }
 
-fn build_key_schema_element(key: &str, key_type: KeyType) -> Result<KeySchemaElement> {
-    Ok(KeySchemaElement::builder()
-        .attribute_name(key)
-        .key_type(key_type)
-        .build()?)
+impl Item {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn string(mut self, key: &str, value: &str) -> Self {
+        self.attributes
+            .insert(key.to_string(), AttributeValue::S(value.to_string()));
+        self
+    }
+
+    pub fn number(mut self, key: &str, value: f64) -> Self {
+        self.attributes
+            .insert(key.to_string(), AttributeValue::N(value.to_string()));
+        self
+    }
+
+    // Add more methods for other attribute types as needed
 }

@@ -1,10 +1,7 @@
 mod dynamodb;
 mod logging;
-
-use std::collections::HashMap;
-
 use anyhow::Result;
-use aws_sdk_dynamodb::types::AttributeValue;
+use dynamodb::Item;
 use tracing::info;
 
 const TABLE_NAME: &str = "testing-products";
@@ -19,34 +16,24 @@ async fn main() -> Result<()> {
 
     let sdk_config = aws_config::load_from_env().await;
 
-    let ddb = dynamodb::DynamoDbApp::new(&sdk_config);
+    let ddb = dynamodb::DynamoDb::new(&sdk_config);
 
     ddb.check_auth().await?;
 
-    ddb.create_table_if_not_exists(
+    ddb.create_table_if_not_exists(&dynamodb::Table::new(
         TABLE_NAME,
         CATEGORY_PARTITION_KEY,
         Some(PRODUCT_NAME_SORT_KEY),
-    )
+    ))
     .await?;
 
     let put_item_result = ddb
         .put_item(
             TABLE_NAME,
-            HashMap::from([
-                (
-                    CATEGORY_PARTITION_KEY.to_string(),
-                    AttributeValue::S("living-room".to_string()),
-                ),
-                (
-                    PRODUCT_NAME_SORT_KEY.to_string(),
-                    AttributeValue::S("couch".to_string()),
-                ),
-                (
-                    PRICE_ATTRIBUTE.to_string(),
-                    AttributeValue::N("375.0".to_string()),
-                ),
-            ]),
+            Item::new()
+                .string(CATEGORY_PARTITION_KEY, "living-room")
+                .string(PRODUCT_NAME_SORT_KEY, "couch")
+                .number(PRICE_ATTRIBUTE, 375.0),
         )
         .await?;
 
