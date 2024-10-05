@@ -1,6 +1,7 @@
 use crate::dynamodb::{DynamoDb, FieldType, Item, Schema, Table};
 use anyhow::Result;
 use aws_sdk_dynamodb::types::AttributeValue;
+use std::collections::HashMap;
 use tokio::time::Duration;
 use tracing::{info, instrument};
 
@@ -152,4 +153,149 @@ fn test_table_operations() {
     let table_with_schema = table.with_schema(schema);
 
     assert!(table_with_schema.schema().is_some());
+}
+
+#[tokio::test]
+async fn test_check_auth() -> Result<()> {
+    let sdk_config = aws_config::load_from_env().await;
+    let ddb = DynamoDb::new(&sdk_config);
+
+    ddb.check_auth().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_describe_table() -> Result<()> {
+    let sdk_config = aws_config::load_from_env().await;
+    let ddb = DynamoDb::new(&sdk_config);
+
+    let _table = setup_test_table(&ddb).await?;
+
+    let description = ddb.describe_table(TEST_TABLE_NAME).await?;
+    assert_eq!(
+        description.table().unwrap().table_name(),
+        Some(TEST_TABLE_NAME)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_get_item() -> Result<()> {
+    let sdk_config = aws_config::load_from_env().await;
+    let ddb = DynamoDb::new(&sdk_config);
+
+    let _table = setup_test_table(&ddb).await?;
+
+    let item = Item::new()
+        .set_string(CATEGORY_PARTITION_KEY, "Books")
+        .set_string(PRODUCT_NAME_SORT_KEY, "The Rust Programming Language")
+        .set_number(PRICE_ATTRIBUTE, 39.99);
+    ddb.put_item(TEST_TABLE_NAME, item).await?;
+
+    let key = Item::new()
+        .set_string(CATEGORY_PARTITION_KEY, "Books")
+        .set_string(PRODUCT_NAME_SORT_KEY, "The Rust Programming Language");
+    let retrieved_item = ddb.get_item(TEST_TABLE_NAME, key).await?;
+
+    assert!(retrieved_item.is_some());
+    let retrieved_item = retrieved_item.unwrap();
+    assert_eq!(retrieved_item.get_number(PRICE_ATTRIBUTE), Some(39.99));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_scan_table() -> Result<()> {
+    let sdk_config = aws_config::load_from_env().await;
+    let ddb = DynamoDb::new(&sdk_config);
+
+    let _table = setup_test_table(&ddb).await?;
+
+    // Add some items
+    for i in 1..=5 {
+        let item = Item::new()
+            .set_string(CATEGORY_PARTITION_KEY, format!("Category{}", i))
+            .set_string(PRODUCT_NAME_SORT_KEY, format!("Product{}", i))
+            .set_number(PRICE_ATTRIBUTE, (i as f64) * 10.0);
+        ddb.put_item(TEST_TABLE_NAME, item).await?;
+    }
+
+    let scanned_items = ddb.scan_table(TEST_TABLE_NAME).await?;
+    assert_eq!(scanned_items.len(), 5);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_scan_with_filter() -> Result<()> {
+    let sdk_config = aws_config::load_from_env().await;
+    let ddb = DynamoDb::new(&sdk_config);
+
+    let _table = setup_test_table(&ddb).await?;
+
+    // Add some items
+    for i in 1..=5 {
+        let item = Item::new()
+            .set_string(CATEGORY_PARTITION_KEY, format!("Category{}", i))
+            .set_string(PRODUCT_NAME_SORT_KEY, format!("Product{}", i))
+            .set_number(PRICE_ATTRIBUTE, (i as f64) * 10.0);
+        ddb.put_item(TEST_TABLE_NAME, item).await?;
+    }
+
+    let filter_expression = Some(String::from("#price > :min_price"));
+    let mut expression_attribute_names = HashMap::new();
+    expression_attribute_names.insert(String::from("#price"), String::from(PRICE_ATTRIBUTE));
+    let mut expression_attribute_values = HashMap::new();
+    expression_attribute_values.insert(
+        String::from(":min_price"),
+        AttributeValue::N(String::from("25")),
+    );
+
+    let scanned_items = ddb
+        .scan(
+            TEST_TABLE_NAME,
+            filter_expression,
+            Some(expression_attribute_names),
+            Some(expression_attribute_values),
+        )
+        .await?;
+
+    assert_eq!(scanned_items.len(), 3); // Only items with price > 25 should be returned
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_query_with_sort_key_condition() -> Result<()> {
+    let sdk_config = aws_config::load_from_env().await;
+    let ddb = DynamoDb::new(&sdk_config);
+
+    let _table = setup_test_table(&ddb).await?;
+
+    // Add some items
+    for i in 1..=5 {
+        let item = Item::new()
+            .set_string(CATEGORY_PARTITION_KEY, "Electronics")
+            .set_string(PRODUCT_NAME_SORT_KEY, format!("Product{}", i))
+            .set_number(PRICE_ATTRIBUTE, (i as f64) * 100.0);
+        ddb.put_item(TEST_TABLE_NAME, item).await?;
+    }
+
+    let partition_key = (
+        CATEGORY_PARTITION_KEY,
+        AttributeValue::S("Electronics".to_string()),
+    );
+    let sort_key_condition = Some((
+        PRODUCT_NAME_SORT_KEY,
+        "begins_with".to_string(),
+        AttributeValue::S("Product".to_string()),
+    ));
+
+    let queried_items = ddb
+        .query_items(TEST_TABLE_NAME, partition_key, sort_key_condition)
+        .await?;
+
+    assert_eq!(queried_items.len(), 5);
+
+    Ok(())
 }
