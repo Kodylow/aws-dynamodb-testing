@@ -72,21 +72,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aws-dynamodb-testing"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aws-config",
- "aws-sdk-dynamodb",
- "dotenv",
- "serde",
- "serde_dynamo",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "aws-runtime"
 version = "1.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -477,6 +462,21 @@ checksum = "1bfb12502f3fc46cca1bb51ac28df9d618d813cdc3d2f25b9fe775a34af26bb3"
 dependencies = [
  "generic-array",
  "typenum",
+]
+
+[[package]]
+name = "ddb-simple"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aws-config",
+ "aws-sdk-dynamodb",
+ "dotenv",
+ "serde",
+ "serde_dynamo",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
